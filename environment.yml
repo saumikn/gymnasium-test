@@ -1,0 +1,12 @@
+name: gymtest
+channels:
+  - conda-forge
+dependencies:
+  - ipykernel
+  - seaborn
+  - numpy
+  - tqdm
+  - pip
+  - pip:
+      - gymnasium[all]
+      - line-profiler
