@@ -3,21 +3,6 @@ import gymnasium as gym
 from gymnasium import spaces
 
 
-def add_visible(grid, square):
-    """Marks the square and the four points adjacant as visible."""
-    s0, s1 = square
-    size = grid.shape[0]
-    for r, c in [
-        (s0, s1),
-        (s0 + 1, s1),
-        (s0 - 1, s1),
-        (s0, s1 + 1),
-        (s0, s1 - 1),
-    ]:
-        if 0 <= r < size and 0 <= c < size:
-            grid[r, c] = 1
-
-
 def is_valid(grid, agent, target):
     """Checks if a randomly initialized grid is valid, meaning there is a continuous path from start to finish."""
     rows, cols = grid.shape
@@ -34,8 +19,8 @@ def is_valid(grid, agent, target):
     return dfs(*agent)
 
 
-def generate_random_map(size=8, p=0.8):
-    """Generates a random valid map (one that has a path from start to goal)
+def generate_random_map(size=8, p=0.8, seed=None):
+    """Generates a random valid map (one that has a path from start to target)
 
     Args:
         size: size of each side of the grid
@@ -43,44 +28,47 @@ def generate_random_map(size=8, p=0.8):
     Returns:
         A random valid map
     """
+
+    rng = np.random.default_rng(seed)
+
     valid = False
     while not valid:
-        grid = np.zeros((4, size, size))
+        grid = np.zeros((3, size, size), dtype=int)
         p = min(p, 1)
-        agent = (0, 0)
-        target = np.random.choice(size * size - 1) + 1
+
+        agent, target = rng.choice(grid[0].size, size=2, replace=False)
+        agent = (agent // size, agent % size)
         target = (target // size, target % size)
         grid[0, *agent] = 1
         grid[1, *target] = 1
-        grid[2] = np.random.choice([0, 1], size=(size, size), p=[1 - p, p])
+        grid[2] = rng.choice([0, 1], size=(size, size), p=[1 - p, p])
         grid[2, *agent] = 0  # Agent isn't on a hazard
         grid[2, *target] = 0  # Target isn't on a hazard
         valid = is_valid(grid[2], agent, target)
+        hazards = frozenset(map(tuple, np.argwhere(grid[2])))
 
-    add_visible(grid[3], agent)
-
-    return grid
+    return grid, agent, target, hazards
 
 
-class HiddenLakeEnv(gym.Env):
+class MDPEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, map_size=4, hazard_p=0.8, slip_p=0):
+    def __init__(self, map_size=4, hazard_p=0.8, slip_p=0, seed=None):
         self.render_mode = None
         self.map_size = map_size
         self.hazard_p = hazard_p
         self.slip_p = slip_p
         self.action_size = 4  # Hardcoded to Up, Down, Left, Right
+        self.seed = seed
 
         """
         The obversation space is a n by n grid.
         The first channel represents the location of the agent.
         The second channel represents the location of the target.
         The third channel represents the location of the hazards.
-        The fourth channel represents the visible squares in the map.
         """
         self.observation_space = spaces.Box(
-            low=0, high=1, shape=(3, self.map_size, self.map_size), dtype=bool
+            low=0, high=1, shape=(3, self.map_size, self.map_size), dtype=int
         )
 
         self.action_space = spaces.Discrete(self.action_size)
@@ -91,40 +79,39 @@ class HiddenLakeEnv(gym.Env):
             np.array([0, -1]),  # Left
         ]
 
-    def _get_obs(self):
-        def totuple(a):
-            """Turns 3d Numpy Array into tuple of tuples of tuples, for hashability"""
-            return tuple(tuple(tuple(row) for row in matrix) for matrix in a)
+    def get_state(self):
+        return (self.agent, self.target, self.hazards)
 
-        return totuple(self.grid[:3] * np.array([self.grid[3]]))
+    def set_state(self, agent, target, hazards):
+        self.agent = agent
+        self.target = target
+        self.hazards = hazards
+
+    def get_grid(self):
+        grid = np.zeros((3, self.map_size, self.map_size), dtype=bool)
+        grid[0, *self.agent] = 1
+        grid[1, *self.target] = 1
+        for h in self.hazards:
+            grid[2, *h] = 1
+        return grid
 
     def _get_info(self):
         """No information necessary for now"""
         return {}
 
-    def _add_visible(self, square):
-        """
-        Marks the four points adjacant to square and the square itself as visible
-        on the grid.
-        """
-        s0, s1 = square
-        for r, c in [
-            (s0, s1),
-            (s0 + 1, s1),
-            (s0 - 1, s1),
-            (s0, s1 + 1),
-            (s0, s1 - 1),
-        ]:
-            if 0 <= r < self.map_size and 0 <= c < self.map_size:
-                self.grid[3, r, c] = 1
-
-    def reset(self, options=None):
+    def reset(self, state=None):
         """Generates a new random map and returns"""
         super().reset()
 
-        # Choose the map uniformly at random
-        self.grid = generate_random_map(self.map_size, self.hazard_p)
-        observation = self._get_obs()
+        if state:
+            self.agent, self.target, self.hazards = state
+        else:
+            # Choose the map uniformly at random
+            _, self.agent, self.target, self.hazards = generate_random_map(
+                self.map_size, self.hazard_p, self.seed
+            )
+
+        observation = self.get_state()
         info = self._get_info()
 
         return observation, info
@@ -143,29 +130,19 @@ class HiddenLakeEnv(gym.Env):
             direction = self._action_to_direction[(action + 1) % self.action_size]
 
         # Updates the location of the agent in the grid
-        cur_agent = np.argwhere(self.grid[0])[0]
-        new_agent = cur_agent + direction
-        new_agent = np.clip(new_agent, 0, self.map_size - 1)
-        self.grid[0] = 0
-        self.grid[0, *new_agent] = 1
+        self.agent = tuple(
+            np.clip(np.array(self.agent) + direction, 0, self.map_size - 1)
+        )
 
         # Checks if the agent has landed on the target or a hazard
-        reached_target = np.sum(self.grid[0] * self.grid[1])
-        reached_hazard = np.sum(self.grid[0] * self.grid[2])
+        reached_target = self.agent == self.target
+        reached_hazard = self.agent in self.hazards
 
-        # Increases the visibility of the grid after moving.
-        add_visible(self.grid[3], new_agent)
-
-        observation = self._get_obs()
-        reward = reached_target  # Reward is 1 if reached_target, else 0
+        observation = self.get_state()
+        # reward = reached_target  # Reward is 1 if reached_target, else 0
+        reward = 10 if reached_target else -1 if reached_hazard else 0
         terminated = reached_target or reached_hazard
         truncated = False  # Doesn't truncate
         info = self._get_info()
 
         return observation, reward, terminated, truncated, info
-
-    def get_state(self):
-        return self.grid
-
-    def set_state(self, grid):
-        self.grid = grid
