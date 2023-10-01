@@ -1,7 +1,7 @@
-for MAP_SIZE in 16
+for MAP_SIZE in 8
 # for MAP_SIZE in 12
 do
-for MYOPIC in {1..40}
+for MYOPIC in {1..20}
 # for MYOPIC in {1..30}
 do
     echo $MAP_SIZE $MYOPIC
