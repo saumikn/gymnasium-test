@@ -1,49 +1,61 @@
-# import tensorflow as tf
-# for gpu in tf.config.list_physical_devices('GPU'):
-#     tf.config.experimental.set_memory_growth(gpu, True)
 import numpy as np
 import gzip
 import pickle
-from constants import MYOPIC, MAP_SIZE
+from constants import HAZARD_P, SLIP_P, GROUP_SIZE
 from tqdm.contrib.concurrent import process_map
     
 import tensorflow as tf
 for gpu in tf.config.list_physical_devices('GPU'):
     tf.config.experimental.set_memory_growth(gpu, True)
 
-def make_model():
-    model = tf.keras.models.Sequential([
-      tf.keras.layers.Flatten(input_shape=(4, MAP_SIZE, MAP_SIZE)),
-      tf.keras.layers.Dense(128, activation='relu'),
-      tf.keras.layers.Dense(128, activation='relu'),
-      tf.keras.layers.Dense(128, activation='relu'),
-      tf.keras.layers.Dense(128, activation='relu'),
-      tf.keras.layers.Dense(4)
-    ])
+def make_model(map_size, num_dense=4):
+    
+    lin = [tf.keras.layers.Flatten(input_shape=(4, map_size, map_size))]
+    ldenses = [tf.keras.layers.Dense(128, activation='relu') for _ in range(num_dense)]
+    lout = [tf.keras.layers.Dense(4)]    
+    model = tf.keras.models.Sequential(lin + ldenses + lout)
     loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
     model.compile(optimizer='adam', loss=loss_fn, metrics=['accuracy'])
     return model
 
-def train_model(myo):
-    filename = f'/storage1/fs1/chien-ju.ho/Active/gym/data/myopic_{myo}.gzip'
-    with gzip.GzipFile(filename, 'rb') as f:
-        res = pickle.loads(f.read())
-    grids, actions = zip(*[(g,a) for _,g,a,_ in res])
-    grids, actions = np.array(grids), np.array(actions)
-    print(f'training myopic = {myo}, n={len(grids)}')
-    split = int(len(grids)*0.8)
-    x_train, x_test = grids[:split], grids[split:]
-    y_train, y_test = actions[:split], actions[split:]
-
-    model = make_model()
-    model.fit(x_train, y_train, epochs=1)
-    model.evaluate(x_test, y_test)
-    print()
-    model.save(f'/storage1/fs1/chien-ju.ho/Active/gym/models/myopic_{myo}.keras')
-        
-for myo in [5,6,7]:
-    train_model(myo)
-                  
-# process_map(train_model, MYOPIC, disable=True, max_workers=3)
+def train_model(map_size, teacher):
+    model = make_model(map_size)
     
+    for group in range(600):
+        print(f'Training data at {map_size} {teacher} {group}', flush=True)
+        data = np.load(f'/storage1/fs1/chien-ju.ho/Active/gym/data{map_size}/train/myopic_{teacher}_{group}.npz')
+        x = data['x']
+        y = data['y']
+        model.fit(x, y, verbose=0)
+    print()
+    # model.save(f'tmp/myopic_{map_size}_{teacher}.keras')
+    model.save(f'/storage1/fs1/chien-ju.ho/Active/gym/models{map_size}/myopic_{teacher}.keras')
+    return
+
+# def eval_model(map_size, teacher):
+#     model = make_model(map_size)
+#     model = tf.keras.models.load_model(f'tmp/myopic_{map_size}_{teacher}.keras')
+    
+#     x_test, y_test = [], []
+
+#     for group in range(100):
+#         print(f'Testing at {map_size} {teacher} {group}', end='\r')
+#         data = np.load(f'/storage1/fs1/chien-ju.ho/Active/gym/data{map_size}/test/myopic_{teacher}_{group}.npz')
+#         x, y = data['x'], data['y']
+#         x_test.append(x)
+#         y_test.append(y)
+#     x_test = np.concatenate(x_test)
+#     y_test = np.concatenate(y_test)
+#     print(x_test.shape, y_test.shape)
+#     model.evaluate(x_test, y_test)
+#     return
+    
+if __name__ == '__main__':
+    import sys
+    map_size = int(sys.argv[1])
+    teacher = int(sys.argv[2])
+    
+    train_model(map_size, teacher)
+    # eval_model(map_size, teacher)
+   
     
