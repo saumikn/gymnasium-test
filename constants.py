@@ -5,3 +5,4 @@ MYOPIC = list(range(1,30))
 
 GROUP_SIZE = 1000
 GROUPS = 1000
+BS = 32
