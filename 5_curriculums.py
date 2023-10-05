@@ -20,7 +20,7 @@ def curr(map_size, student, teacher, train_size, seed):
     # K.set_value(model.optimizer.learning_rate, 0.0001)
     
     rng = np.random.default_rng(seed)
-    train_groups = rng.choice(700, size=1, replace=False)
+    train_groups = rng.choice(700, size=15, replace=False)
     x, y = [], []
     for train_group in train_groups:
         data = np.load(f'/storage1/fs1/chien-ju.ho/Active/gym/data{map_size}/train/myopic_{teacher}_{train_group}.npz')
@@ -28,7 +28,8 @@ def curr(map_size, student, teacher, train_size, seed):
         y.append(data['y'])
     x, y = np.concatenate(x), np.concatenate(y)
     print(x.shape, y.shape, seed)
-    model.fit(x[:train_size*BS], y[:train_size*BS], batch_size=BS, verbose=0)
+    if train_size:
+        model.fit(x[:train_size*BS], y[:train_size*BS], batch_size=BS, verbose=0)
         
     test_size = 1000
     test_groups = rng.choice(700, size=12, replace=False)
@@ -48,7 +49,7 @@ def curr(map_size, student, teacher, train_size, seed):
     all_results = []
     for si, state in enumerate(x):
         print(si, end='\r')
-        all_results.append(model_reward(map_size, teacher, state))
+        all_results.append(model_reward(model, map_size, state))
         
         
     with open(f'output/res_curr.txt', 'a') as f:
@@ -63,6 +64,11 @@ if __name__=='__main__':
     student = int(sys.argv[2])
     teacher = int(sys.argv[3])
     train_size = int(sys.argv[4])
+    
+    if len(sys.argv) >= 6:
+        offset = int(sys.argv[5])
+    else:
+        offset = 0
         
-    iterables = [(map_size,student,teacher,train_size,seed) for seed in range(50)]
-    res = process_map(curr, *zip(*iterables), chunksize=1, max_workers=10)
+    iterables = [(map_size,student,teacher,train_size,seed) for seed in range(offset, offset+100)]
+    res = process_map(curr, *zip(*iterables), chunksize=1, max_workers=5)

@@ -22,7 +22,7 @@ if __name__ == '__main__':
     map_sizes = [map_size for _ in x]
     teachers = [teacher for _ in x]
     
-    res = process_map(model_reward, map_sizes, teachers, x, disable=True)
+    res = process_map(model_reward, teachers, map_sizes, x, disable=True)
     
     with open('output/eval_sim.txt', 'a') as f:
         print(f'{map_size},{teacher},{np.mean(res)}', file=f, flush=True)

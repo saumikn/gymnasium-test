@@ -54,6 +54,7 @@ if __name__ == '__main__':
     import sys
     map_size = int(sys.argv[1])
     teacher = int(sys.argv[2])
+    border = int(sys.argv[2])
     
     train_model(map_size, teacher)
     # eval_model(map_size, teacher)

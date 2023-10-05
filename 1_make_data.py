@@ -5,9 +5,8 @@ import pickle
 import gzip
 from functools import cache
 import numpy as np
-import gc
 
-from constants import HAZARD_P, SLIP_P, GROUP_SIZE
+from constants import HAZARD_P, SLIP_P, GROUP_SIZE, DIR
 
 
 def max_model(map_size):
@@ -71,13 +70,16 @@ if __name__ == '__main__':
     import sys
     map_size = int(sys.argv[1])
     group = int(sys.argv[2])
-    sizes = [map_size for _ in range(GROUP_SIZE)]
-    myopics = list(range(int(map_size*2.5+1)))
+    sizes = [map_size for _ in range(GROUP_SIZE)] # map_size is constant
+    myopics = list(range(max_model(map_size))) # data goes up to limit
+    seeds = list(range(group*GROUP_SIZE, group*GROUP_SIZE + GROUP_SIZE))
     
-    disable=True
     
-    groups = list(range(group*GROUP_SIZE, group*GROUP_SIZE + GROUP_SIZE))
-    res = process_map(exp, sizes, groups, chunksize=1, disable=disable)
+    # Each group has GROUP_SIZE number of seeds. Each seed gives us about map_size**2 data points
+    
+    disable=True    
+    
+    res = process_map(exp, sizes, seeds, chunksize=1, disable=disable)
     res = [j for i in res for j in i]
     for myo in trange(1, max_model(map_size), disable=disable):
         res_myo = [i for i in res if i[0]==myo]
@@ -87,5 +89,5 @@ if __name__ == '__main__':
         x_train, x_test = grids[:split], grids[split:]
         y_train, y_test = actions[:split], actions[split:]
 
-        np.savez_compressed(f'/storage1/fs1/chien-ju.ho/Active/gym/data{map_size}/train/myopic_{myo}_{group}.npz', x=x_train, y=y_train)
-        np.savez_compressed(f'/storage1/fs1/chien-ju.ho/Active/gym/data{map_size}/test/myopic_{myo}_{group}.npz', x=x_test, y=y_test)
+        np.savez_compressed(f'{DIR}/data{map_size}/train/myopic_{myo}_{group}.npz', x=x_train, y=y_train)
+        np.savez_compressed(f'{DIR}/data{map_size}/test/myopic_{myo}_{group}.npz', x=x_test, y=y_test)

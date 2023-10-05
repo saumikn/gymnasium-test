@@ -1,14 +1,14 @@
 for MAP_SIZE in 12
 do
+for GROUP in 771 772 776 777 778 781 869
 # for GROUP in {0..999}
-for GROUP in {0..999}
 do
-    echo $MAP_SIZE $GROUP $CK $TEACH
+    echo $MAP_SIZE $GROUP
     bsub -n 16 \
     -q general \
     -m general \
     -G compute-chien-ju.ho \
-    -J ${TEACH}_${CK} \
+    -J ${MAP_SIZE}_${GROUP} \
     -M 64GB \
     -N \
     -u saumik@wustl.edu \

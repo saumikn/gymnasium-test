@@ -4,11 +4,15 @@ from mdp import MDPEnv, is_valid
 from constants import HAZARD_P, SLIP_P, GROUP_SIZE
 
 
-def model_reward(map_size, teacher, state):
+def model_reward(model, map_size, state):
     import tensorflow as tf
     for gpu in tf.config.list_physical_devices('GPU'):
         tf.config.experimental.set_memory_growth(gpu, True)
-    tf.get_logger().setLevel('ERROR')    
+    tf.get_logger().setLevel('ERROR')  
+    
+    
+    if isinstance(model, int):
+        model = tf.keras.models.load_model(f'/storage1/fs1/chien-ju.ho/Active/gym/models{map_size}/myopic_{model}.keras')
     
     env = MDPEnv(map_size=map_size, hazard_p=HAZARD_P, slip_p=SLIP_P)
     env.reset(state)
@@ -29,7 +33,7 @@ def model_reward(map_size, teacher, state):
             agents.append((i,j))
             grids.append(env.get_grid())
             states.append(state)
-    model = tf.keras.models.load_model(f'/storage1/fs1/chien-ju.ho/Active/gym/models{map_size}/myopic_{teacher}.keras')
+    
     actions = model.predict(np.array(grids)).argmax(axis=1)
     trans = dict(zip(agents, actions))
     visited = {}
