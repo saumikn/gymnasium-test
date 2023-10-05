@@ -8,7 +8,13 @@ import numpy as np
 from constants import HAZARD_P, SLIP_P, GROUP_SIZE, BS, DIR
 from helpers import batchl, flat
 from model_reward import model_reward
+import gc
 
+
+save_points = [1,2,3,4,5,6,7,8,9,
+               10,20,30,40,50,60,70,80,90,
+               100,200,300,400,500,600,700,800,900,
+               1000]
 
 def tune_model(map_size, student, teacher, train_size, seed):
     import tensorflow as tf
@@ -20,30 +26,37 @@ def tune_model(map_size, student, teacher, train_size, seed):
 
     rng = np.random.default_rng(seed)
     if train_size:    
-        num_groups = int(np.ceil(train_size/2000))
-        train_groups = rng.choice(700, size=num_groups, replace=False)
+        num_groups = int(np.ceil(train_size/1000))
+        train_groups = rng.choice(1000, size=num_groups, replace=False)
         x, y = [], []
-        for train_group in train_groups:
-            data = np.load(f'/storage1/fs1/chien-ju.ho/Active/gym/data{map_size}/train/myopic_{teacher}_{train_group}.npz')
-            x.append(data['x'])
-            y.append(data['y'])
-            # print(len(x), end='\r')
-        x, y = np.concatenate(x), np.concatenate(y)
-        if len(x) < train_size*BS:
-            raise Exception
-        with tf.device("CPU"):
-            train_dataset = tf.data.Dataset.from_tensor_slices((x, y))
-            train_dataset = train_dataset.shuffle(10000).batch(BS).take(train_size)
-        model.fit(train_dataset, verbose=0)
+        for i, group in enumerate(train_groups):
+            print(f'Training at {i}', end='\r')
+            data = np.load(f'/storage1/fs1/chien-ju.ho/Active/gym/data{map_size}/train/myopic_{teacher}_{group}.npz')
+            with tf.device("CPU"):
+                train_dataset = tf.data.Dataset.from_tensor_slices((data['x'], data['y']))
+                train_dataset = train_dataset.shuffle(10000, seed=seed).batch(BS).take(1000)
+            model.fit(train_dataset, verbose=0)
+            if i+1 in save_points:
+                model.save(f'{DIR}/tmp/{map_size}_{student}_{teacher}_{(i+1)*1000}_{seed}.keras')
+            # del train_dataset
+            # gc.collect()
+            
+        # x, y = np.concatenate(x), np.concatenate(y)
+        # if len(x) < train_size*BS:
+        #     raise Exception
+        # with tf.device("CPU"):
+        #     train_dataset = tf.data.Dataset.from_tensor_slices((x, y))
+        #     train_dataset = train_dataset.shuffle(10000).batch(BS).take(train_size)
+        # model.fit(train_dataset)
         # model.fit(x[:train_size*BS], y[:train_size*BS], batch_size=BS, verbose=0)
         
-    model.save(f'{DIR}/tmp/{map_size}_{student}_{teacher}_{train_size}_{seed}.keras')
+#     model.save(f'{DIR}/tmp/{map_size}_{student}_{teacher}_{train_size}_{seed}.keras')
     
-    import gc
-    del x
-    del y
-    del train_dataset
-    gc.collect()
+#     import gc
+#     del x
+#     del y
+#     del train_dataset
+#     gc.collect()
 
     
 def eval_tuned(map_size, student, teacher, train_size, seed):
@@ -143,18 +156,18 @@ if __name__=='__main__':
     else:
         offset = 0
         
-    iterables = [(map_size,student,teacher,train_size,seed) for seed in range(offset, offset+100)]
+    iterables = [(map_size,student,teacher,train_size,seed) for seed in range(offset, offset+10)]
     
     
     import time
     
     st = time.perf_counter()
     
-    # process_map(tune_model, *zip(*iterables), chunksize=1, max_workers=10)
+    process_map(tune_model, *zip(*iterables), chunksize=1, max_workers=10)
     
-    print(time.perf_counter() - st)
+    # print(time.perf_counter() - st)
     
-    process_map(eval_tuned, *zip(*iterables), chunksize=1, max_workers=40)
+    # process_map(eval_tuned, *zip(*iterables), chunksize=1, max_workers=40)
     
     
     print(time.perf_counter() - st)
