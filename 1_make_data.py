@@ -7,6 +7,8 @@ from functools import cache
 import numpy as np
 
 from constants import HAZARD_P, SLIP_P, GROUP_SIZE, DIR
+from pathlib import Path
+
 
 
 def max_model(map_size):
@@ -70,16 +72,23 @@ if __name__ == '__main__':
     import sys
     map_size = int(sys.argv[1])
     group = int(sys.argv[2])
-    sizes = [map_size for _ in range(GROUP_SIZE)] # map_size is constant
-    myopics = list(range(max_model(map_size))) # data goes up to limit
-    seeds = list(range(group*GROUP_SIZE, group*GROUP_SIZE + GROUP_SIZE))
+    
+    GROUP_SIZE_ADJ = GROUP_SIZE//(map_size**2)
+    seeds = range(group*GROUP_SIZE_ADJ, (group+1)*GROUP_SIZE_ADJ)
+    
+    iterables = []
+    for seed in seeds:
+        iterables += [(map_size, seed)]
+    
+    # sizes = [map_size for _ in range(GROUP_SIZE)] # map_size is constant
+    # seeds = list(range(group*GROUP_SIZE, group*GROUP_SIZE + GROUP_SIZE))
     
     
-    # Each group has GROUP_SIZE number of seeds. Each seed gives us about map_size**2 data points
+    # Each group has about GROUP_SIZE/(map_size**2) number of points.
     
     disable=True    
     
-    res = process_map(exp, sizes, seeds, chunksize=1, disable=disable)
+    res = process_map(exp, *zip(*iterables), chunksize=1, disable=disable)
     res = [j for i in res for j in i]
     for myo in trange(1, max_model(map_size), disable=disable):
         res_myo = [i for i in res if i[0]==myo]
@@ -89,5 +98,8 @@ if __name__ == '__main__':
         x_train, x_test = grids[:split], grids[split:]
         y_train, y_test = actions[:split], actions[split:]
 
+        
+        Path(f'{DIR}/data{map_size}/train').mkdir(parents=True, exist_ok=True)
+        Path(f'{DIR}/data{map_size}/test').mkdir(parents=True, exist_ok=True)
         np.savez_compressed(f'{DIR}/data{map_size}/train/myopic_{myo}_{group}.npz', x=x_train, y=y_train)
         np.savez_compressed(f'{DIR}/data{map_size}/test/myopic_{myo}_{group}.npz', x=x_test, y=y_test)

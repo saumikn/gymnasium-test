@@ -1,10 +1,7 @@
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
-
-GOAL = 10
-HAZARD = -1
-RAND = 0.01
+from constants import GOAL, HAZARD, RAND
 
 
 def is_valid(grid, agent, target):

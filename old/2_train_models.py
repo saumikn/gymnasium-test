@@ -3,20 +3,12 @@ import gzip
 import pickle
 from constants import HAZARD_P, SLIP_P, GROUP_SIZE
 from tqdm.contrib.concurrent import process_map
+from model_reward import make_model
     
 import tensorflow as tf
 for gpu in tf.config.list_physical_devices('GPU'):
     tf.config.experimental.set_memory_growth(gpu, True)
 
-def make_model(map_size, num_dense=4):
-    
-    lin = [tf.keras.layers.Flatten(input_shape=(4, map_size, map_size))]
-    ldenses = [tf.keras.layers.Dense(128, activation='relu') for _ in range(num_dense)]
-    lout = [tf.keras.layers.Dense(4)]    
-    model = tf.keras.models.Sequential(lin + ldenses + lout)
-    loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-    model.compile(optimizer='adam', loss=loss_fn, metrics=['accuracy'])
-    return model
 
 def train_model(map_size, teacher):
     model = make_model(map_size)

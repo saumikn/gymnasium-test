@@ -1,7 +1,6 @@
-for MAP_SIZE in 12
+for GROUP in {0..1023}
 do
-for GROUP in 771 772 776 777 778 781 869
-# for GROUP in {0..999}
+for MAP_SIZE in 4 8 12
 do
     echo $MAP_SIZE $GROUP
     bsub -n 16 \
@@ -16,7 +15,7 @@ do
     -g /saumik/limit100 \
     -a "docker(saumikn/chesstrainer:gym)" \
     "cd ~/gymnasium-test && /opt/conda/bin/python 1_make_data.py" ${MAP_SIZE} ${GROUP}
-    sleep 0.1
+    # sleep 0.1
 done
 done
 # -o /storage1/fs1/chien-ju.ho/Active/chess/logs/${TEACH}_${CK}.%J \
