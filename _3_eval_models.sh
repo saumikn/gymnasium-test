@@ -1,25 +1,31 @@
-for MAP_SIZE in 8
+for NODE in 256 1024
 # for MAP_SIZE in 12
 do
-for MYOPIC in {1..20}
+for STUDENT in 1 2 3 4 5 6 7 8 9 10
 # for MYOPIC in {1..30}
 do
-    echo $MAP_SIZE $MYOPIC
-    bsub -n 1 \
+STUD1=$(($STUDENT+1))
+STUD2=$(($STUDENT+2))
+for TEACHER in $(seq $STUDENT 1 15);
+# for TEACHER in 20
+do
+    echo ${NODE}_${STUDENT}_${TEACHER}
+    bsub -n 10 \
     -q general \
     -m general \
     -G compute-chien-ju.ho \
-    -J ${MAP_SIZE}_${MYOPIC} \
+    -J ${NODE}_${STUDENT}_${TEACHER} \
     -M 64GB \
     -N \
     -u saumik@wustl.edu \
-    -o /home/n.saumik/gymnasium-test/tmp/${MAP_SIZE}_${MYOPIC}.%J \
+    -o /home/n.saumik/gymnasium-test/tmp/${NODE}_${STUDENT}_${TEACHER}.%J \
     -R "rusage[mem=64GB] span[hosts=1] select[gpuhost]" \
-    -gpu "num=1:gmodel=TeslaV100_SXM2_32GB:j_exclusive=yes" \
-    -g /saumik/limit10 \
+    -gpu "num=1:gmodel=TeslaV100_SXM2_32GB:j_exclusive=no" \
+    -g /saumik/limit100 \
     -a "docker(saumikn/chesstrainer:gym)" \
-    "cd ~/gymnasium-test && /opt/conda/bin/python 3_eval_models.py" ${MAP_SIZE} ${MYOPIC}
+    "cd ~/gymnasium-test && /opt/conda/bin/python _3_eval_models.py" $NODE $STUDENT $TEACHER
     sleep 0.1
+done
 done
 done
 # -o /storage1/fs1/chien-ju.ho/Active/chess/logs/${TEACH}_${CK}.%J \
