@@ -53,7 +53,6 @@ def train_model(map_size, student, teacher, train_size, seed, num_dense, num_nod
         with tf.device("CPU"):
             x = data['x']
             markers_arr = np.zeros((len(x), map_size*2-1, map_size, map_size))
-            
             if markers:
                 for j in range(len(x)):
                     xj = x[j]
@@ -85,8 +84,8 @@ if __name__=='__main__':
     offset = int(sys.argv[7])
     markers = int(sys.argv[8])
     
-    simul = 1
+    simul = 5
         
     iterables = [(map_size,student,teacher,train_size,seed,num_dense,num_nodes,markers)
                  for seed in range(offset, offset+simul)]    
-    process_map(train_model, *zip(*iterables), chunksize=1, max_workers=1)
+    process_map(train_model, *zip(*iterables), chunksize=1, max_workers=5)

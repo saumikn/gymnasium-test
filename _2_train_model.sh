@@ -28,7 +28,7 @@ do
     -gpu "num=1:gmodel=TeslaV100_SXM2_32GB:j_exclusive=no" \
     -g /saumik/limit100 \
     -a "docker(saumikn/chesstrainer:gym)" \
-    "cd ~/gymnasium-test && /opt/conda/bin/python _2_train_model.py" ${MAP_SIZE} ${STUDENT} ${TEACHER} ${TRAIN} 4 256 $OFFSET
+    "cd ~/gymnasium-test && /opt/conda/bin/python _2_train_model.py" ${MAP_SIZE} ${STUDENT} ${TEACHER} ${TRAIN} 4 256 $OFFSET 1
     sleep 0.1
 done
 done

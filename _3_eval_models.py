@@ -6,6 +6,9 @@ from constants import DIR, HAZARD_P, SLIP_P
 from functools import cache
 from mdp import MDPEnv, is_valid
 
+from itertools import product
+from scipy.spatial.distance import cdist
+
 def model_reward(map_size, model, state, max_iters=100000, gamma=1, verbose=False):
         
     env = MDPEnv(map_size=map_size, hazard_p=HAZARD_P, slip_p=SLIP_P)
@@ -107,7 +110,7 @@ def geti(x, start):
 
     return i0, i1
 
-def reward_eval(map_size, student, teacher, ds, DIR=DIR, num_dense=4, num_nodes=1024, ts=1000, seed=0):
+def reward_eval(map_size, student, teacher, ds, DIR=DIR, num_dense=4, num_nodes=1024, ts=1000, seed=0, markers=1):
     import tensorflow as tf
     for gpu in tf.config.list_physical_devices('GPU'):
         tf.config.experimental.set_memory_growth(gpu, True)
@@ -117,13 +120,26 @@ def reward_eval(map_size, student, teacher, ds, DIR=DIR, num_dense=4, num_nodes=
     x, y = [], []
     for test_group in range(test_size//3000+1):
         data = np.load(f'{DIR}/data{map_size}/test/myopic_{teacher}_{test_group}.npz')
-        x.append(data['x'])   
+        _x = data['x']
+        markers_arr = np.zeros((len(_x), map_size*2-1, map_size, map_size))
+        if markers:
+            for j in range(len(_x)):
+                xj = _x[j]
+                mj = markers_arr[j]
+                xa = np.argwhere(xj[0])
+                xb = np.array(list(product(*[range(k) for k in xj[0].shape])))
+                dists = cdist(xa, xb, metric='cityblock')
+                idxs = np.hstack([dists.T, xb]).astype(int)
+                mj[tuple(idxs.T)] = 1
+            _x = np.concatenate((_x, markers_arr), axis=1)
+
+        x.append(_x)   
         y.append(data['y'])
     x = np.concatenate(x)
     y = np.concatenate(y)
         
     avg_trues, avg_preds, avg_accs = [], [], []
-    model = tf.keras.models.load_model(f'{DIR}/models_{num_dense}_{num_nodes}_{map_size}/{student}_{teacher}_{ds}_{seed}.keras') 
+    model = tf.keras.models.load_model(f'{DIR}/models_{num_dense}_{256}_{map_size}_{markers}/{student}_{teacher}_{ds}_{seed}.keras') 
     y_pred = model(x).numpy().argmax(axis=1)
     for start in range(skip,test_size,skip):
         i0, i1 = geti(x, start)
@@ -152,7 +168,7 @@ if __name__ == '__main__':
     res = []
     iterables = []
     for ds in [2000, 4000, 8000, 16000, 32000, 64000]:
-        for seed in range(20):
+        for seed in range(1):
             iterables.append([map_size, student, teacher, ds, DIR, dense, node, ts, seed])
     print(f'{node} {student} {teacher}')
     res = process_map(reward_eval, *zip(*iterables), chunksize=1, max_workers=10, leave=False)
