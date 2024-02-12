@@ -212,7 +212,7 @@ def eval_training(modeli, student, teachers, save, pct=0):
         model2.rewards = {len(X)//bs: final_reward}
         
         
-    with open('/storage1/fs1/chien-ju.ho/Active/gym/tree.txt', 'a') as f:
+    with open('/storage1/fs1/chien-ju.ho/Active/gym/tree-map2.txt', 'a') as f:
         for k, v in model2.rewards.items():
             print(f"{student};{teachers};{pct};{modeli};{k};{v}", file=f, flush=True)
 
@@ -344,7 +344,7 @@ def exp(student, verbose=True, n=20, nb=100, mode='one', algo=None, pct=0):
         teachers.append([(0.1, n0*k), (0.1, 10*k), (0.01, n2)])
         teachers.append([(0.1, n0*k), (0.01, n2), (0.01, 10)])
         
-    elif mode.starswith('optimal'):
+    elif mode.startswith('optimal'):
         k = int(mode[-1])
         teachers = []
         for i in range(1, 11):
@@ -368,12 +368,12 @@ def exp(student, verbose=True, n=20, nb=100, mode='one', algo=None, pct=0):
     res = process_map(eval_training, iters, s_, t_, saves, pcts, max_workers=21, chunksize=1)
     return res
 
-def exp_algo(mode):
+def exp_algo(mode, student, n):
     path = []
     algo = [10, 10]
     while np.sum(algo) < 100:
         print(algo)
-        res = exp(100, n=1000, nb=100, mode=mode, pct=0, algo=algo)
+        res = exp(student, n=n, nb=100, mode=mode, pct=0, algo=algo)
         res = pd.DataFrame(res, columns=['i','student','teacher','reward'])
         res['reward'] = res.reward.apply(lambda x: list(x.values())[0])
         res['teacher'] = res.teacher.apply(tuple)
@@ -407,7 +407,7 @@ if __name__ == '__main__':
     elif ms == 2:
         students = np.logspace(-2, 2, 17)
         ns = [0,5,5,6,7,8,9,10,11,12,13,14,15]
-        arrs = np.array([[1,0],[.95,.90]])
+        arrs = np.array([[1,0],[.80,.60]])
 
     ranked = False
     top2 = True
@@ -418,22 +418,21 @@ if __name__ == '__main__':
     currs = process_map(make_data, students, [ntotal]*len(students), max_workers=17, chunksize=1)
     currs = dict(zip([f"{s:.3f}" for s in students], currs))
 
-    # args = []
-    # for pct in [0, 0.2, 0.4, 0.6, 0.8, 1]:
-    #     args.append(['two-2', pct])
-#     for mode in [
-#         'one',
-#         # 'two-1',
-#         # 'three-1','three-2','three-3',
-#         # 'optimal-1','optimal-2','optimal-3',
-#         # 'algo-1','algo-2','algo-3'
-#     ]:
-#         args.append([mode, 0])
-#     for mode, pct in args:
-#         _ = exp(100, n=1000, nb=100, mode=mode, pct=pct)
+    args = []
+    for pct in [0, 0.2, 0.4, 0.6, 0.8, 1]:
+        args.append(['two-2', pct])
+    for mode in [
+        'one',
+        'two-1',
+        'three-1','three-2','three-3',
+        'optimal-1','optimal-2','optimal-3',
+    ]:
+        args.append([mode, 0])
+    for mode, pct in args:
+        _ = exp(-1, n=200, nb=100, mode=mode, pct=pct)
         
     
-    for mode in ['algo-1', 'algo-2', 'algo-3']:
-        path = exp_algo(mode)
-        print(path)
-        print()
+    # for mode in ['algo-1', 'algo-2', 'algo-3']:
+    #     path = exp_algo(mode, -1, 200)
+    #     print(path)
+    #     print()
