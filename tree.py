@@ -81,9 +81,9 @@ def eval_training(modeli, student, teachers, save=False, pct=0):
     model2.fit(X, Y, verbose=False, shuffle=False, batch_size=bs, callbacks=[CustomCallback()]) 
     model2.rewards[len(X)//bs] = get_r(model2)
         
-    with open('/storage1/fs1/chien-ju.ho/Active/gym/tree4.txt', 'a') as f:
-        for k, v in model2.rewards.items():
-            print(f"{student};{teachers};{pct};{modeli};{k};{v}", file=f, flush=True)
+    # with open('/storage1/fs1/chien-ju.ho/Active/gym/tree4.txt', 'a') as f:
+    #     for k, v in model2.rewards.items():
+    #         print(f"{student};{teachers};{pct};{modeli};{k};{v}", file=f, flush=True)
 
     return (modeli, student, teachers, model2.rewards)
 
