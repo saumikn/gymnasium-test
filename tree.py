@@ -8,6 +8,10 @@ from tqdm.contrib.concurrent import process_map
 import pandas as pd
 
 from helpers import *
+
+import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["MPLCONFIGDIR"] = "/tmp/"
     
 
 def eval_training(modeli, student, teachers, save=False, pct=0):
@@ -24,7 +28,7 @@ def eval_training(modeli, student, teachers, save=False, pct=0):
     class CustomCallback(tf.keras.callbacks.Callback):
         def __init__(self):
             super(CustomCallback, self).__init__()
-        def on_batch_begin(self, batch, logs=None):            
+        def on_batch_begin(self, batch, logs=None):
             if save and batch % 1 == 0:
                 self.model.rewards[batch] = get_r(self.model)
     
@@ -77,37 +81,38 @@ def eval_training(modeli, student, teachers, save=False, pct=0):
             _X[:] = _X[perm]
             _Y[:] = _Y[perm]
     
-    X, Y = np.concatenate(X), np.concatenate(Y)        
+    X, Y = np.concatenate(X), np.concatenate(Y)
     model2.fit(X, Y, verbose=False, shuffle=False, batch_size=bs, callbacks=[CustomCallback()]) 
     model2.rewards[len(X)//bs] = get_r(model2)
-        
-    # with open('/storage1/fs1/chien-ju.ho/Active/gym/tree4.txt', 'a') as f:
-    #     for k, v in model2.rewards.items():
-    #         print(f"{student};{teachers};{pct};{modeli};{k};{v}", file=f, flush=True)
+    
+    with open('/storage1/fs1/chien-ju.ho/Active/gym/tree/tree6.txt', 'a') as f:
+        for k, v in model2.rewards.items():
+            print(f"{student};{teachers};{pct};{modeli};{k};{v}", file=f, flush=True)
 
     return (modeli, student, teachers, model2.rewards)
 
-def exp2(mode, n, nb=100, student=None, algo=None):
+def exp2(mode, n, nb=100, student=100, algo=None):
     modeli = list(range(n))
-    students = [-1, 100]
+    # students = [-1, 100]
+    # students = [-1, 10, 100]
+    students = [student]
     saves = [False]
     pcts = [0]
     
     if mode == 'one':
-        teachers = [[(t, nb*2)] for t in [0.01, 0.032, 0.1, 0.316, 1., 3.162, 10.]]
+        teachers = [[(t, nb*2)] for t in [0.01, 0.03, 0.1, 0.3, 1., 3., 10.]]
         saves = [True]
     
     elif mode == 'two-A':
         teachers = (
-            [[((0.01,0.032,0.1,0.316), i)] for i in range(4, nb*4+1, 4)]
-            + [[((0.316,0.1), i//2), ((0.032,0.01), i//2)] for i in range(4, nb*4+1, 4)]
-            + [[(0.316, i//4), (0.1, i//4), (0.032, i//4), (0.01, i//4)] for i in range(4, nb*4+1, 4)]
+            [[((0.01,0.03,0.1,0.3), i)] for i in range(4, nb*2+1, 4)]
+            + [[((0.3,0.1), i//2), ((0.03,0.01), i//2)] for i in range(4, nb*4+1, 4)]
+            + [[(0.3, i//4), (0.1, i//4), (0.03, i//4), (0.01, i//4)] for i in range(4, nb*4+1, 4)]
         )
-        
     
     elif mode == 'two-B':
-        teachers = [[((0.316,0.1), i//2), ((0.032,0.01), i//2)] for i in range(8, nb*4+1, 8)]
-        pcts = [0.25, 0.5, 0.75, 1]
+        teachers = [[((0.3,0.1), i//2), ((0.03,0.01), i//2)] for i in range(10, nb*2+1, 10)]
+        pcts = [0, 0.2, 0.4, 0.6, 0.8, 1]
         
     elif mode.startswith('split'):
         k = int(mode[-1])
@@ -116,8 +121,8 @@ def exp2(mode, n, nb=100, student=None, algo=None):
     elif mode.startswith('optimal'):
         k = int(mode[-1])
         teachers = []
-        for budget in range(10, nb+1, 10):
-            for split in range(0, budget+1, 5):
+        for budget in range(1, nb+1, 1):
+            for split in range(0, budget+1, 1):
                 teachers.append([(0.1, k*split), (0.01, (budget-split))])
         
     elif mode.startswith('algo'):
@@ -174,21 +179,30 @@ if __name__ == '__main__':
     #     _ = exp(-1, n=200, nb=100, mode=mode, pct=pct)
         
     for mode in [
-        'one',
-        'two-A',
-        'two-B',
-        'split-1','split-2',
-        'optimal-1','optimal-2',
+        # 'one',
+        # 'two-A',
+        # 'two-B',
+        # 'split-1',
+        # 'split-2',
+        # 'split-3',
+        'optimal-1',
+        # 'optimal-2',
+        # 'optimal-3',
     ]:
         print(mode)
-        exp2(mode, 150)
+        exp2(mode, 50, student=-1)
         print()
+    
+    # for mode in [
+    #     'algo-2'
+    # ]:
+    #     path = exp_algo(mode, 100, 1)
         
     
     # for mode in [
     #     'algo-1',
-    #     'algo-2',
+    #     # 'algo-2',
     # ]:
-    #     path = exp_algo(mode, 100, 50)
+    #     path = exp_algo(mode, -1, 50)
     #     print(path)
     #     print()
