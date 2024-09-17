@@ -3,35 +3,56 @@ from tqdm import tqdm
 import sys
 from itertools import product
 import os
-from functools import cache
+import gc
+import time
+
+# from memory_profiler import profile
+from pympler import tracker
 
 
 class Tree:
-    def __init__(self, depth=10, mode="float", seed=0, hide=False):
+    def __init__(self, depth=10, mode="float", seed=0):
         self.depth = depth
-        self.n = 2**depth - 1
+        self.n = 2 ** (self.depth) - 1
         self.mode = mode
-        self.hide = hide
+        self.get_all_path_cache = {}
+        self.get_visible_arr_cache = {}
         if mode == "float":
             self.arr = np.random.default_rng(seed).random(self.n)
-        elif mode == "linear":
+        elif mode.startswith("linear-"):
+            factor = float(mode.split("-")[1])
             self.arr = np.random.default_rng(seed).random(self.n)
-            for level in range(depth):
-                self.arr[2**level - 1 : 2 ** (level + 1) - 1] *= depth + 1
+            for level in range(self.depth):
+                self.arr[2**level - 1 : 2 ** (level + 1) - 1] *= level * factor
+        elif mode.startswith("exponential-"):
+            factor = float(mode.split("-")[1])
+            self.arr = np.random.default_rng(seed).random(self.n)
+            for level in range(self.depth):
+                self.arr[2**level - 1 : 2 ** (level + 1) - 1] *= factor**level
+        # elif mode == "linear":
+        #     self.arr = np.random.default_rng(seed).random(self.n)
+        #     for level in range(depth):
+        #         self.arr[2**level - 1 : 2 ** (level + 1) - 1] *= depth + 1
         elif mode == "binary" or mode.startswith("streak-"):
             self.arr = np.random.default_rng(seed).integers(
                 0, 1, endpoint=True, size=self.n, dtype=np.int32
             )
+        elif mode.startswith("risk-"):
+            self.arr = np.zeros(self.n, dtype=np.float32)
+            self.arr[self.n // 2] = float(mode[5:])
+            self.arr[np.random.default_rng(seed).integers(self.n // 2, self.n - 1)] = 1
         else:
             raise ValueError(
                 "Mode must be 'float', 'linear', 'binary', or start with 'streak-"
             )
 
-    def _l(self, i):
+    @staticmethod
+    def _l(i):
         return i * 2 + 1
 
-    def _r(self, i):
-        return self._l(i) + 1
+    @staticmethod
+    def _r(i):
+        return Tree._l(i) + 1
 
     def get_upstream(self, i):
         path = [i]
@@ -40,25 +61,33 @@ class Tree:
             path.insert(0, i)
         return [p for p in path if p < self.n]
 
-    @cache
     def get_all_paths(self, i, skill):
-        if i >= self.n or skill == 0:
+        if (i, skill) in self.get_all_path_cache:
+            return self.get_all_path_cache[(i, skill)]
+        if i >= self.n or skill < 0:
+            self.get_all_path_cache[(i, skill)] = None
             return None
 
         l = r = i
-        for _ in range(skill - 1):
-            if self._l(l) < self.n:
-                l = self._l(l)
-                r = self._r(r)
+        for _ in range(skill):
+            if Tree._l(l) < self.n:
+                l = Tree._l(l)
+                r = Tree._r(r)
 
         paths = [self.get_upstream(node) for node in range(l, r + 1)]
         paths = {p[-1]: p for p in paths}
         paths = list(paths.values())
+        self.get_all_path_cache[(i, skill)] = paths
         return paths
 
     def score_path(self, path):
         scores = [self.arr[p] for p in path]
-        if self.mode in ["float", "linear", "binary"]:
+        if (
+            self.mode in ["float", "binary"]
+            or self.mode.startswith("linear-")
+            or self.mode.startswith("exponential-")
+            or self.mode.startswith("risk-")
+        ):
             return sum(scores)
         elif self.mode.startswith("streak-"):
             streak = int(self.mode.split("-")[1])
@@ -70,16 +99,16 @@ class Tree:
             raise ValueError
 
     def get_scores(self, i, skill):
-        if i >= self.n or skill == 0:
+        if i >= self.n or skill < 0:
             return [0]
         paths = self.get_all_paths(i, skill)
         return [self.score_path(path) for path in paths]
 
     def get_choice(self, i, skill):
-        if self._l(i) >= self.n or skill == 0:
+        if Tree._l(i) >= self.n or skill < 0:
             return None
-        lscore = max(self.get_scores(self._l(i), skill - 1))
-        rscore = max(self.get_scores(self._r(i), skill - 1))
+        lscore = max(self.get_scores(Tree._l(i), skill - 1))
+        rscore = max(self.get_scores(Tree._r(i), skill - 1))
         return int(rscore > lscore)
 
     def get_path(self, i, skill):
@@ -89,27 +118,34 @@ class Tree:
             path += [(i, choice)]
             if choice is None:
                 break
-            i = self._l(i) + choice
+            i = Tree._l(i) + choice
         return path
 
-    def get_visible(self, i, skill):
-        paths = self.get_all_paths(i, skill)
-        visible = list(set([p1 for p0 in paths for p1 in p0]))
-        mask = np.zeros(self.n)
-        mask[visible] = 1
-        return mask
+    def get_visible_arr(self, window, i):
+        if (window, i) in self.get_visible_arr_cache:
+            return self.get_visible_arr_cache[(window, i)]
+        up = self.get_upstream(i)[:-1]
+        split = self.depth - 2
+        X = np.zeros(self.depth + 2 ** (window + 1) - 3) - 1
+        X[split - len(up) : split] = [self.arr[u] for u in up]
+        paths = self.get_all_paths(i, window)
+        visible = list(sorted(list(set(j for i in paths for j in i))))
+        visible = [self.arr[v] for v in visible if v not in up]
+        X[split : split + len(visible)] = visible
+        self.get_visible_arr_cache[(window, i)] = X
+        return X
 
-    def get_training_data(self, skill):
+    def get_training_data(self, skill, window=0):
+
         path = self.get_path(0, skill)[:-1]
-        X = np.zeros((len(path), self.n * 2))
-        X[:, : self.n] = self.arr.reshape((1, 1, -1))
-        for row, (i, _) in enumerate(path):
-            X[row, self.n + i] = 1
-            if self.hide:
-                mask = self.get_visible(i, skill)
-                X[row, : self.n] += 1
-                X[row, : self.n] *= mask
-                X[row, : self.n] -= 1
+
+        if window:
+            X = np.stack([self.get_visible_arr(window, i) for (i, _) in path])
+        else:
+            X = np.zeros((len(path), self.n * 2))
+            X[:, : self.n] = self.arr.reshape((1, 1, -1))
+            for i, (node, _) in enumerate(path):
+                X[i, self.n + node] = 1
         Y = np.array([choice for (_, choice) in path])
         return X, Y
 
@@ -121,36 +157,55 @@ class Tree:
 
 
 class Forest:
-    def __init__(self, depth, mode, start, stop, hide):
+    def __init__(self, depth, mode, start, stop):
         self.depth = depth
         self.m = stop - start
-        self.trees = [Tree(depth, mode, seed, hide) for seed in range(start, stop)]
+        self.trees = [Tree(depth, mode, seed) for seed in range(start, stop)]
 
-    def get_training_data(self, skill):
+    # @profile
+    def get_training_data(self, skill, window=0):
         X, Y = [], []
         for tree in self.trees:
-            _x, _y = tree.get_training_data(skill)
+            _x, _y = tree.get_training_data(skill, window)
             X.append(_x)
             Y.append(_y)
-        return np.concatenate(X), np.concatenate(Y)
+        X_array = np.concatenate(X)
+        Y_array = np.concatenate(Y)
+        del X
+        del Y
+        return X_array, Y_array
 
-    def eval_model(self, model):
-        n = self.trees[0].n
-        X = np.zeros((self.m, n * 2))
-        for i, tree in enumerate(self.trees):
-            X[i, :n] = tree.arr
+    def eval_model(self, model, window):
 
-        locs = np.zeros(self.m, dtype=np.int32)
-        X[np.arange(self.m), locs + n] = 1
-
-        paths = [locs]
-        for i in range(self.depth - 1):
-            Y = model(X).numpy().argmax(axis=1)
-            X[np.arange(self.m), locs + n] = 0
-            locs = locs * 2 + 1 + Y
+        if window == 0:
+            n = self.trees[0].n
+            X = np.zeros((self.m, n * 2))
+            for i, tree in enumerate(self.trees):
+                X[i, :n] = tree.arr
+            locs = np.zeros(self.m, dtype=np.int32)
             X[np.arange(self.m), locs + n] = 1
-            paths.append(locs)
-        paths = np.array(paths).T
+
+            paths = [locs]
+            for i in range(self.depth - 1):
+                Y = model(X).numpy().argmax(axis=1)
+                X[np.arange(self.m), locs + n] = 0
+                locs = locs * 2 + 1 + Y
+                X[np.arange(self.m), locs + n] = 1
+                paths.append(locs)
+            paths = np.array(paths).T
+
+        else:
+            paths = [[0] for _ in enumerate(self.trees)]
+            for _ in range(self.depth - 1):
+                X = np.stack(
+                    [
+                        tree.get_visible_arr(window, paths[i][-1])
+                        for i, tree in enumerate(self.trees)
+                    ]
+                )
+                Y = model(X).numpy().argmax(axis=1)
+                for i, choice in enumerate(Y):
+                    paths[i].append(Tree._l(paths[i][-1]) + choice)
 
         scores = []
         for tree, path in zip(self.trees, paths):
@@ -179,10 +234,13 @@ class EarlyStopper:
         return at_best, at_patience
 
 
-def make_model(depth, opt="sgd", lr=0.01, num_nodes=16, num_layers=1):
+def make_model(depth, window, opt="sgd", lr=1, num_nodes=16, num_layers=1):
     import tensorflow as tf
 
-    inputs = tf.keras.layers.Input(shape=(2**depth - 1) * 2)
+    if window == 0:
+        inputs = tf.keras.layers.Input(shape=(2**depth - 1) * 2)
+    else:
+        inputs = tf.keras.layers.Input(shape=depth + 2 ** (window + 1) - 3)
     x = tf.keras.layers.Flatten()(inputs)
     for _ in range(num_layers):
         x = tf.keras.layers.Dense(num_nodes, activation="relu")(x)
@@ -192,80 +250,97 @@ def make_model(depth, opt="sgd", lr=0.01, num_nodes=16, num_layers=1):
 
     if opt == "adam":
         opt = tf.keras.optimizers.Adam(learning_rate=0.001 * lr)
-    elif opt == "adamw":
-        opt = tf.keras.optimizers.Adamw(learning_rate=0.001 * lr)
     elif opt == "sgd":
+        opt = tf.keras.optimizers.SGD(learning_rate=0.01 * lr)
+    elif opt == "sgdn":
         opt = tf.keras.optimizers.SGD(
-            learning_rate=0.01 * lr, momentum=0.9, nesterov=True
+            learning_rate=0.01 * lr, momentum=0.90, nesterov=True
         )
     else:
         raise ValueError("Optimizer should be either 'adam' or 'sgd'")
     loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False)
-    model.compile(optimizer=opt, loss=loss_fn, metrics=["accuracy"])
+    model.compile(optimizer=opt, loss=loss_fn, metrics=["accuracy"], run_eagerly=False)
     return model
 
 
+# @profile
 def exp(
     seed,
-    depth,
+    decisions,
+    window,
     mode,
     budget,
     skill,
     opt,
     lr,
-    patience=50,
+    patience=20,
     write=True,
-    num_nodes=64,
-    num_layers=3,
+    num_nodes=16,
+    num_layers=1,
 ):
-    # print("Starting experiment")
+    depth = decisions + 1
+    print(f"\n\n\nStarting experiment: Seed-{seed} Depth-{depth} Skill-{skill}")
+
     import tensorflow as tf
 
-    train = Forest(depth, mode, budget * seed, budget * (seed + 1), hide=True)
-    ds = (
-        tf.data.Dataset.from_tensor_slices(train.get_training_data(skill))
-        .cache()
-        .shuffle(1000, seed)
-        .batch(256)
-        .prefetch(tf.data.experimental.AUTOTUNE)
-    )
+    st = time.perf_counter()
+    train = Forest(depth, mode, budget * seed, budget * (seed + 1))
+    X_train, Y_train = train.get_training_data(skill, window=window)
+    X_train, Y_train = tf.convert_to_tensor(X_train), tf.convert_to_tensor(Y_train)
+    print(f"train data: {seed} {depth} {skill}", time.perf_counter() - st)
+    # return
 
-    test_budget = 10000
-    test_offset = int(1e9)
-    testing = Forest(
+    st = time.perf_counter()
+    test_budget, test_offset = 2000, int(1e9)
+    test = Forest(
         depth,
         mode,
         test_budget * seed + test_offset,
         test_budget * (seed + 1) + test_offset,
-        hide=True,
     )
-    ds_test = (
-        tf.data.Dataset.from_tensor_slices(testing.get_training_data(skill))
-        .cache()
-        .shuffle(1000, seed)
-        .batch(4096)
-        .prefetch(tf.data.experimental.AUTOTUNE)
-    )
-    model = make_model(depth, opt, lr, num_nodes, num_layers)
+    print("made testing forest")
+    X_test, Y_test = test.get_training_data(skill, window=window)
+    print("made testing data")
+    X_test, Y_test = tf.convert_to_tensor(X_test), tf.convert_to_tensor(Y_test)
+    print("made testing tensor")
+    print(f"test data: {seed} {depth} {skill}", time.perf_counter() - st)
+
+    st = time.perf_counter()
+    model = make_model(depth, window, opt, lr, num_nodes, num_layers)
+    print(f"make model: {seed} {depth} {skill}", time.perf_counter() - st)
 
     tqdm_kwargs = {
         "ncols": 80,
-        "leave": False,
-        "position": 1,
+        "leave": True,
+        "desc": f"Seed {seed} Depth {depth} Skill {skill}",
+        # "position": 1,
         # "disable": True,
     }
-
     stopper = EarlyStopper(patience, minimize=False)
-    for epoch in tqdm(range(1000), **tqdm_kwargs):
+
+    for epoch in tqdm(range(2000), **tqdm_kwargs):
+        # print()
+        # st = time.perf_counter()
         if epoch != 0:
-            model.fit(ds, verbose=0)
-        loss, acc = model.evaluate(ds_test, verbose=0)
-        _, _, score = testing.eval_model(model)
-        _, at_patience = stopper.should_stop(score)
+            model.fit(X_train, Y_train, batch_size=256, verbose=0)
+        # print(f"model fit: {seed} {epoch}", time.perf_counter() - st)
+
+        # st = time.perf_counter()
+        loss, acc = model.evaluate(X_test, Y_test, batch_size=4096, verbose=0)
+        # print(f"model evaluate: {seed} {epoch}", time.perf_counter() - st)
+
+        # st = time.perf_counter()
+        _, scores, _ = test.eval_model(model, window=window)
+        valid_score = np.mean(scores[: test_budget // 2])
+        test_score = np.mean(scores[test_budget // 2 :])
+        # print(f"model eval_model: {seed} {epoch}", time.perf_counter() - st)
+        _, at_patience = stopper.should_stop(valid_score)
+
         if write:
             write_output(
                 seed,
-                depth,
+                depth - 1,
+                window,
                 mode,
                 budget,
                 skill,
@@ -276,78 +351,78 @@ def exp(
                 epoch,
                 loss,
                 acc,
-                score,
-                stopper.best_value,
+                valid_score,
                 stopper.wait,
                 stopper.patience,
+                test_score,
             )
         if at_patience:
             break
-    return score
+
+    st = time.perf_counter()
+    del X_train, Y_train, X_test, Y_test
+    del train, test
+    del model
+    tf.keras.backend.clear_session()
+    gc.collect()
+    print(f"deleting: {seed} {depth} {skill}", time.perf_counter() - st)
 
 
-def single_exp(seeds, depths, modes, budgets, skills, opts, lrs):
+# @profile
+def single_exp(seeds, decisions, windows, modes, budgets, skills, opts, lrs):
     print("importing tensorflow")
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
     os.environ["MPLCONFIGDIR"] = "/tmp/"
     import tensorflow as tf
-
-    print("finished importing tensorflow")
+    import numpy as np
 
     tf.config.set_visible_devices([], "GPU")
 
-    tqdm_kwargs = {
-        "ncols": 80,
-        "leave": True,
-    }
-    combos = list(product(seeds, depths, modes, budgets, skills, opts, lrs))
+    print("finished importing tensorflow")
+
+    tqdm_kwargs = {"ncols": 80, "leave": True, "disable": True}
+
+    combos = list(product(seeds, decisions, windows, modes, budgets, skills, opts, lrs))
     for combo in tqdm(combos, **tqdm_kwargs):
         exp(*combo)
 
 
-def multi_exp(seeds, depths, modes, budgets, skills, opts, lrs, pos=0):
-    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-    os.environ["MPLCONFIGDIR"] = "/tmp/"
-    import tensorflow as tf
-
-    tf.config.set_visible_devices([], "GPU")
-
-    tqdm_kwargs = {
-        "ncols": 80,
-        "position": pos,
-        "desc": f"Seeds {min(seeds)}-{max(seeds)}; Depth {depths[0]}",
-        "leave": False,
-    }
-    combos = list(product(seeds, depths, modes, budgets, skills))
-    for seed, depth, mode, budget, skill in tqdm(combos, **tqdm_kwargs):
-        exp(seed, depth, mode, budget, skill, write=True)
-
-
 def write_output(*args):
-    with open("/storage1/fs1/chien-ju.ho/Active/tree/output7.txt", "a") as f:
+    with open("/storage1/fs1/chien-ju.ho/Active/tree/output15.txt", "a") as f:
         print(",".join([str(a) for a in args]), file=f, flush=True)
 
 
-def main(depth, skill, mode, budget, start, end):
-    if skill > depth:
-        return
-
-    opt = "sgd"
-    lr = 10
-    single_exp(np.arange(start, end), [depth], [mode], [budget], [skill], [opt], [lr])
+def main(decisions, window, skills, mode, budget, start, end, opt, lr):
+    single_exp(
+        np.arange(start, end),
+        [decisions],
+        [window],
+        [mode],
+        [budget],
+        skills,
+        [opt],
+        [lr],
+    )
 
 
 if __name__ == "__main__":
 
-    depth = int(sys.argv[1])
-    skill = int(sys.argv[2])
-    mode = sys.argv[3]
-    budget = int(sys.argv[4])
-    start, end = [int(i) for i in sys.argv[5].split("-")]
+    decisions = int(sys.argv[1])
+    mode = sys.argv[2]
+    budget = int(sys.argv[3])
+    start, end = [int(i) for i in sys.argv[4].split("-")]
+    opt = sys.argv[5]
+    lr = float(sys.argv[6])
 
-    main(depth, skill, mode, budget, start, end)
+    # window = min(12, decisions)
+    # skills = [s for s in [2, 4, 6, 8] if s <= window]
+    window = 0
+    num = 4
+    assert decisions % num == 0, f"{decisions} and {num} aren't divisible"
+    skills = decisions // num * np.arange(num + 1)
+
+    main(decisions, window, skills, mode, budget, start, end, opt, lr)
 
     # budgets = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
     # budgets = [1, 10, 100, 1000, 10000]
