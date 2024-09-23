@@ -10,6 +10,13 @@ import time
 from pympler import tracker
 
 
+def softmax(a, temp):
+    a /= temp
+    a -= a.max()
+    a = np.exp(a) / np.exp(a).sum()
+    return a
+
+
 class Tree:
     def __init__(self, depth=10, mode="float", seed=0):
         self.depth = depth
@@ -17,30 +24,39 @@ class Tree:
         self.mode = mode
         self.get_all_path_cache = {}
         self.get_visible_arr_cache = {}
+        self.rng = np.random.default_rng(seed)
         if mode == "float":
-            self.arr = np.random.default_rng(seed).random(self.n)
+            self.arr = self.rng.random(self.n)
         elif mode.startswith("linear-"):
             factor = float(mode.split("-")[1])
-            self.arr = np.random.default_rng(seed).random(self.n)
+            self.arr = self.rng.random(self.n)
             for level in range(self.depth):
                 self.arr[2**level - 1 : 2 ** (level + 1) - 1] *= level * factor
         elif mode.startswith("exponential-"):
             factor = float(mode.split("-")[1])
-            self.arr = np.random.default_rng(seed).random(self.n)
+            self.arr = self.rng.random(self.n)
             for level in range(self.depth):
                 self.arr[2**level - 1 : 2 ** (level + 1) - 1] *= factor**level
         # elif mode == "linear":
-        #     self.arr = np.random.default_rng(seed).random(self.n)
+        #     self.arr = self.rng.random(self.n)
         #     for level in range(depth):
         #         self.arr[2**level - 1 : 2 ** (level + 1) - 1] *= depth + 1
         elif mode == "binary" or mode.startswith("streak-"):
-            self.arr = np.random.default_rng(seed).integers(
+            self.arr = self.rng.integers(
                 0, 1, endpoint=True, size=self.n, dtype=np.int32
             )
         elif mode.startswith("risk-"):
             self.arr = np.zeros(self.n, dtype=np.float32)
             self.arr[self.n // 2] = float(mode[5:])
-            self.arr[np.random.default_rng(seed).integers(self.n // 2, self.n - 1)] = 1
+            self.arr[self.rng.integers(self.n // 2, self.n - 1)] = 1
+        elif mode.startswith("normal-"):
+            self.arr = np.zeros(self.n, dtype=np.float32)
+            self.arr[0::2] = self.rng.normal(0, 1, self.arr[0::2].shape)
+            loc = int(mode.split("-")[1])
+            self.arr[1::2] = self.rng.normal(loc, 1, self.arr[1::2].shape)
+            self.arr[self.rng.integers(self.n // 2, self.n - 1)] += (
+                depth * int(mode.split("-")[2]) * 2
+            )
         else:
             raise ValueError(
                 "Mode must be 'float', 'linear', 'binary', or start with 'streak-"
@@ -61,15 +77,15 @@ class Tree:
             path.insert(0, i)
         return [p for p in path if p < self.n]
 
-    def get_all_paths(self, i, skill):
-        if (i, skill) in self.get_all_path_cache:
-            return self.get_all_path_cache[(i, skill)]
-        if i >= self.n or skill < 0:
-            self.get_all_path_cache[(i, skill)] = None
+    def get_all_paths(self, i, vision):
+        if (i, vision) in self.get_all_path_cache:
+            return self.get_all_path_cache[(i, vision)]
+        if i >= self.n or vision < 0:
+            self.get_all_path_cache[(i, vision)] = None
             return None
 
         l = r = i
-        for _ in range(skill):
+        for _ in range(vision):
             if Tree._l(l) < self.n:
                 l = Tree._l(l)
                 r = Tree._r(r)
@@ -77,39 +93,39 @@ class Tree:
         paths = [self.get_upstream(node) for node in range(l, r + 1)]
         paths = {p[-1]: p for p in paths}
         paths = list(paths.values())
-        self.get_all_path_cache[(i, skill)] = paths
+        self.get_all_path_cache[(i, vision)] = paths
         return paths
 
     def score_path(self, path):
         scores = [self.arr[p] for p in path]
-        if (
-            self.mode in ["float", "binary"]
-            or self.mode.startswith("linear-")
-            or self.mode.startswith("exponential-")
-            or self.mode.startswith("risk-")
-        ):
-            return sum(scores)
-        elif self.mode.startswith("streak-"):
+        if self.mode.startswith("streak-"):
             streak = int(self.mode.split("-")[1])
             for s, _ in enumerate(scores[: (1 - streak)]):
                 if scores[s : s + streak] == [0] * streak:
                     scores[s : s + streak] = [2 for _ in range(streak)]
             return sum(scores)
         else:
-            raise ValueError
+            return sum(scores)
 
-    def get_scores(self, i, skill):
-        if i >= self.n or skill < 0:
+    def get_scores(self, i, vision):
+        if i >= self.n or vision < 0:
             return [0]
-        paths = self.get_all_paths(i, skill)
+        paths = self.get_all_paths(i, vision)
         return [self.score_path(path) for path in paths]
 
     def get_choice(self, i, skill):
-        if Tree._l(i) >= self.n or skill < 0:
+        vision, temp = skill
+        if Tree._l(i) >= self.n or vision < 0:
             return None
-        lscore = max(self.get_scores(Tree._l(i), skill - 1))
-        rscore = max(self.get_scores(Tree._r(i), skill - 1))
-        return int(rscore > lscore)
+        lscore = max(self.get_scores(Tree._l(i), vision - 1))
+        rscore = max(self.get_scores(Tree._r(i), vision - 1))
+
+        scores = np.array([lscore, rscore])
+        if temp > 0:
+            scores = softmax(scores, temp)
+            return self.rng.choice(2, p=scores)
+        else:
+            return np.argmax(scores)
 
     def get_path(self, i, skill):
         path = []
@@ -135,9 +151,12 @@ class Tree:
         self.get_visible_arr_cache[(window, i)] = X
         return X
 
-    def get_training_data(self, skill, window=0):
+    def get_training_data(self, skill, window=0, leaf=False):
 
-        path = self.get_path(0, skill)[:-1]
+        if leaf:
+            path = self.get_path(0, skill)
+        else:
+            path = self.get_path(0, skill)[:-1]
 
         if window:
             X = np.stack([self.get_visible_arr(window, i) for (i, _) in path])
@@ -163,10 +182,10 @@ class Forest:
         self.trees = [Tree(depth, mode, seed) for seed in range(start, stop)]
 
     # @profile
-    def get_training_data(self, skill, window=0):
+    def get_training_data(self, skill, window=0, leaf=False):
         X, Y = [], []
         for tree in self.trees:
-            _x, _y = tree.get_training_data(skill, window)
+            _x, _y = tree.get_training_data(skill, window, leaf)
             X.append(_x)
             Y.append(_y)
         X_array = np.concatenate(X)
@@ -343,7 +362,8 @@ def exp(
                 window,
                 mode,
                 budget,
-                skill,
+                skill[0],
+                skill[1],
                 opt,
                 lr,
                 num_nodes,
@@ -384,12 +404,13 @@ def single_exp(seeds, decisions, windows, modes, budgets, skills, opts, lrs):
     tqdm_kwargs = {"ncols": 80, "leave": True, "disable": True}
 
     combos = list(product(seeds, decisions, windows, modes, budgets, skills, opts, lrs))
+    print(combos)
     for combo in tqdm(combos, **tqdm_kwargs):
         exp(*combo)
 
 
 def write_output(*args):
-    with open("/storage1/fs1/chien-ju.ho/Active/tree/output15.txt", "a") as f:
+    with open("/storage1/fs1/chien-ju.ho/Active/tree/output18.txt", "a") as f:
         print(",".join([str(a) for a in args]), file=f, flush=True)
 
 
@@ -418,9 +439,10 @@ if __name__ == "__main__":
     # window = min(12, decisions)
     # skills = [s for s in [2, 4, 6, 8] if s <= window]
     window = 0
-    num = 4
-    assert decisions % num == 0, f"{decisions} and {num} aren't divisible"
-    skills = decisions // num * np.arange(num + 1)
+
+    skills = [(i, 0) for i in range(1, decisions + 1)] + [
+        (decisions, i) for i in (0.01, 0.1, 1)
+    ]
 
     main(decisions, window, skills, mode, budget, start, end, opt, lr)
 

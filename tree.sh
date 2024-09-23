@@ -1,6 +1,6 @@
 # for SEED in 0
-# for SEED in {100..900..100}
-for SEED in {1000..4900..100}
+for SEED in {0..900..100}
+# for SEED in {100..400..100}
 do
 SEED1=$((${SEED}+1))
 SEED10=$((${SEED}+10))
@@ -9,14 +9,14 @@ SEED100=$((${SEED}+100))
 
 # for BUDGET in 10 20 50 100 200 500 1000 2000 5000
 # for BUDGET in 1 2 5 10 20 50 100 200 500 1000
-for BUDGET in 1 2 4 8 16 32 64 128 256 512 1024 2048
+for BUDGET in 1 2 4 8 16 32 64 128 256
 # for BUDGET in 1 2 3 4 5 6 7 8 9 10
 do
 
-for DEPTH in 4
+for DEPTH in 2 3 4
 do
 # 
-for MODE in 'risk-0.5'
+for MODE in 'normal-0-0' 'normal-1-0' 'normal-2-0'
 # for MODE in 'streak-2'
 # for MODE in 'linear-1' 'linear-2' 'exponential-2'
 do
