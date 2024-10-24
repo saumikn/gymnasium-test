@@ -1,3 +1,5 @@
+print("importing numpy")
+
 import numpy as np
 from tqdm import tqdm
 import sys
@@ -7,7 +9,17 @@ import gc
 import time
 
 # from memory_profiler import profile
-from pympler import tracker
+# from pympler import tracker
+
+print("importing tensorflow")
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+os.environ["MPLCONFIGDIR"] = "/tmp/"
+import tensorflow as tf
+
+tf.config.set_visible_devices([], "GPU")
+
+print("done with imports")
 
 
 def softmax(a, temp):
@@ -15,6 +27,14 @@ def softmax(a, temp):
     a -= a.max()
     a = np.exp(a) / np.exp(a).sum()
     return a
+
+
+skill_key = {
+    "A": (1, 0),
+    "B": (2, 0),
+    "C": (3, 0),
+    "D": (4, 0),
+}
 
 
 class Tree:
@@ -37,10 +57,6 @@ class Tree:
             self.arr = self.rng.random(self.n)
             for level in range(self.depth):
                 self.arr[2**level - 1 : 2 ** (level + 1) - 1] *= factor**level
-        # elif mode == "linear":
-        #     self.arr = self.rng.random(self.n)
-        #     for level in range(depth):
-        #         self.arr[2**level - 1 : 2 ** (level + 1) - 1] *= depth + 1
         elif mode == "binary" or mode.startswith("streak-"):
             self.arr = self.rng.integers(
                 0, 1, endpoint=True, size=self.n, dtype=np.int32
@@ -57,6 +73,28 @@ class Tree:
             self.arr[self.rng.integers(self.n // 2, self.n - 1)] += (
                 depth * int(mode.split("-")[2]) * 2
             )
+        elif mode.startswith("uniform-"):
+            self.arr = np.zeros(self.n, dtype=np.float32)
+            self.arr[0::2] = self.rng.uniform(0, 1, self.arr[0::2].shape)
+            a = int(mode.split("-")[1]) / 100
+            b = int(mode.split("-")[2]) / 100
+            self.arr[1::2] = self.rng.uniform(a, b, self.arr[1::2].shape)
+        elif mode.startswith("critical-"):
+            self.arr = self.rng.random(self.n)
+            rewards = self.rng.random(self.n // 2)
+            a, b = [int(i) for i in mode.split("-")[1:]]
+            for i, reward in enumerate(rewards):
+                l = self._l(i)
+                r = self._r(i)
+                if reward < 0.5:
+                    self.arr[l] += a
+                    self.arr[r] += -b
+                    self.arr[i] = 0
+                elif reward < 0.1:
+                    self.arr[l] += -b
+                    self.arr[r] += a
+                    self.arr[i] = 0
+
         else:
             raise ValueError(
                 "Mode must be 'float', 'linear', 'binary', or start with 'streak-"
@@ -114,7 +152,7 @@ class Tree:
         return [self.score_path(path) for path in paths]
 
     def get_choice(self, i, skill):
-        vision, temp = skill
+        vision, temp = skill_key[skill]
         if Tree._l(i) >= self.n or vision < 0:
             return None
         lscore = max(self.get_scores(Tree._l(i), vision - 1))
@@ -253,19 +291,20 @@ class EarlyStopper:
         return at_best, at_patience
 
 
-def make_model(depth, window, opt="sgd", lr=1, num_nodes=16, num_layers=1):
-    import tensorflow as tf
-
-    if window == 0:
-        inputs = tf.keras.layers.Input(shape=(2**depth - 1) * 2)
-    else:
-        inputs = tf.keras.layers.Input(shape=depth + 2 ** (window + 1) - 3)
-    x = tf.keras.layers.Flatten()(inputs)
-    for _ in range(num_layers):
-        x = tf.keras.layers.Dense(num_nodes, activation="relu")(x)
-    output1 = tf.keras.layers.Dense(2, name="Y")(x)
-    output1 = tf.keras.layers.Softmax()(output1)
-    model = tf.keras.models.Model(inputs=inputs, outputs=output1)
+def make_model(
+    depth=None, window=0, opt="sgd", lr=1, num_nodes=16, num_layers=1, model=None
+):
+    if model is None:
+        if window == 0:
+            inputs = tf.keras.layers.Input(shape=(2**depth - 1) * 2)
+        else:
+            inputs = tf.keras.layers.Input(shape=depth + 2 ** (window + 1) - 3)
+        x = tf.keras.layers.Flatten()(inputs)
+        for _ in range(num_layers):
+            x = tf.keras.layers.Dense(num_nodes, activation="relu")(x)
+        output1 = tf.keras.layers.Dense(2, name="Y")(x)
+        output1 = tf.keras.layers.Softmax()(output1)
+        model = tf.keras.models.Model(inputs=inputs, outputs=output1)
 
     if opt == "adam":
         opt = tf.keras.optimizers.Adam(learning_rate=0.001 * lr)
@@ -288,183 +327,396 @@ def exp(
     decisions,
     window,
     mode,
+    skill_str,
     budget,
-    skill,
-    opt,
-    lr,
     patience=20,
     write=True,
+    opt="sgd",
+    lr=0.1,
     num_nodes=16,
     num_layers=1,
+    verbose=True,
 ):
     depth = decisions + 1
-    print(f"\n\n\nStarting experiment: Seed-{seed} Depth-{depth} Skill-{skill}")
-
-    import tensorflow as tf
-
-    st = time.perf_counter()
-    train = Forest(depth, mode, budget * seed, budget * (seed + 1))
-    X_train, Y_train = train.get_training_data(skill, window=window)
-    X_train, Y_train = tf.convert_to_tensor(X_train), tf.convert_to_tensor(Y_train)
-    print(f"train data: {seed} {depth} {skill}", time.perf_counter() - st)
-    # return
-
-    st = time.perf_counter()
-    test_budget, test_offset = 2000, int(1e9)
-    test = Forest(
-        depth,
-        mode,
-        test_budget * seed + test_offset,
-        test_budget * (seed + 1) + test_offset,
-    )
-    print("made testing forest")
-    X_test, Y_test = test.get_training_data(skill, window=window)
-    print("made testing data")
-    X_test, Y_test = tf.convert_to_tensor(X_test), tf.convert_to_tensor(Y_test)
-    print("made testing tensor")
-    print(f"test data: {seed} {depth} {skill}", time.perf_counter() - st)
+    if verbose:
+        print(f"\n\n\nStarting experiment: Seed-{seed} Depth-{depth} Skill-{skill_str}")
 
     st = time.perf_counter()
     model = make_model(depth, window, opt, lr, num_nodes, num_layers)
-    print(f"make model: {seed} {depth} {skill}", time.perf_counter() - st)
+    best = model.get_weights()
 
-    tqdm_kwargs = {
-        "ncols": 80,
-        "leave": True,
-        "desc": f"Seed {seed} Depth {depth} Skill {skill}",
-        # "position": 1,
-        # "disable": True,
-    }
+    if decisions == 4:
+        if isinstance(budget, (list, np.ndarray)):
+            budget = np.array(budget).astype(int)
+            budget_str = "_".join(str(i) for i in budget)
+
+        elif budget.startswith("right_"):
+            budget_str = budget
+            budget = int(budget_str.split("_")[1]) * np.array([0.125, 0.125, 0.25, 0.5])
+
+        elif budget.startswith("equal_"):
+            budget_str = budget
+            budget = int(budget_str.split("_")[1]) * np.array([0.25, 0.25, 0.25, 0.25])
+
+        elif budget.startswith("left_"):
+            budget_str = budget
+            budget = int(budget_str.split("_")[1]) * np.array([0.5, 0.25, 0.125, 0.125])
+
+        budget = budget.astype(int)
+        budget = dict(zip("ABCD", budget))
+        if verbose:
+            print(budget)
+
+    elif decisions == 2:
+        if isinstance(budget, list):
+            budget = np.array(budget).atype(int)
+            budget_str = "_".join(str(i) for i in budget)
+
+        elif budget.startswith("right_"):
+            budget_str = budget
+            budget = int(budget_str.split("_")[1]) * np.array([0.25, 0.75])
+
+        elif budget.startswith("equal_"):
+            budget_str = budget
+            budget = int(budget_str.split("_")[1]) * np.array([0.5, 0.5])
+
+        elif budget.startswith("left_"):
+            budget_str = budget
+            budget = int(budget_str.split("_")[1]) * np.array([0.75, 0.25])
+
+        budget = budget.astype(int)
+        budget = dict(zip("AB", budget))
+        if verbose:
+            print(budget)
+
+    if verbose:
+        print(
+            f"make model: {seed} {depth} {skill_str} {budget_str}",
+            time.perf_counter() - st,
+        )
+
+    skills = [[(s, budget[s]) for s in stage] for stage in skill_str.split("_")]
+    if verbose:
+        print(skills)
+
     stopper = EarlyStopper(patience, minimize=False)
+    best_test = -np.inf
 
-    for epoch in tqdm(range(2000), **tqdm_kwargs):
-        # print()
-        # st = time.perf_counter()
-        if epoch != 0:
-            model.fit(X_train, Y_train, batch_size=256, verbose=0)
-        # print(f"model fit: {seed} {epoch}", time.perf_counter() - st)
+    for stagei, stage in enumerate(skills):
+        if verbose:
+            print(stage)
+        model = make_model(model=model)
+        model.set_weights(best)
 
-        # st = time.perf_counter()
-        loss, acc = model.evaluate(X_test, Y_test, batch_size=4096, verbose=0)
-        # print(f"model evaluate: {seed} {epoch}", time.perf_counter() - st)
+        X_trains, Y_trains, X_tests, Y_tests = [], [], [], []
 
-        # st = time.perf_counter()
-        _, scores, _ = test.eval_model(model, window=window)
-        valid_score = np.mean(scores[: test_budget // 2])
-        test_score = np.mean(scores[test_budget // 2 :])
-        # print(f"model eval_model: {seed} {epoch}", time.perf_counter() - st)
-        _, at_patience = stopper.should_stop(valid_score)
+        for s, budget in stage:
+            st = time.perf_counter()
+            if not budget:
+                continue
+            train = Forest(depth, mode, budget * seed, budget * (seed + 1))
+            X_train, Y_train = train.get_training_data(s, window=window)
+            if verbose:
+                print(
+                    f"train data: {seed} {depth} {s} {budget}", time.perf_counter() - st
+                )
 
-        if write:
-            write_output(
-                seed,
-                depth - 1,
-                window,
+            st = time.perf_counter()
+            test_budget, test_offset = 16384, int(1e9)
+            # test_budget, test_offset = 4096, int(1e9)
+            test = Forest(
+                depth,
                 mode,
-                budget,
-                skill[0],
-                skill[1],
-                opt,
-                lr,
-                num_nodes,
-                num_layers,
-                epoch,
-                loss,
-                acc,
-                valid_score,
-                stopper.wait,
-                stopper.patience,
-                test_score,
+                test_budget * seed + test_offset,
+                test_budget * (seed + 1) + test_offset,
             )
-        if at_patience:
-            break
+            X_test, Y_test = test.get_training_data(s, window=window)
+            if verbose:
+                print(
+                    f"test data: {seed} {depth} {s} {budget}", time.perf_counter() - st
+                )
+            X_trains.append(X_train)
+            Y_trains.append(Y_train)
+            X_tests.append(X_test)
+            Y_tests.append(Y_test)
 
-    st = time.perf_counter()
+        if not X_trains:
+            continue
+
+        X_train = tf.convert_to_tensor(np.concatenate(X_trains))
+        Y_train = tf.convert_to_tensor(np.concatenate(Y_trains))
+        X_test = tf.convert_to_tensor(np.concatenate(X_tests))
+        Y_test = tf.convert_to_tensor(np.concatenate(Y_tests))
+
+        tqdm_kwargs = {
+            "ncols": 80,
+            "leave": True,
+            "desc": f"Seed {seed} Depth {depth} Stage {'+'.join(s for s, _ in stage)}",
+            # "position": 1,
+            "disable": not verbose,
+        }
+
+        stopper.wait = 0
+        for epoch in tqdm(range(2000), **tqdm_kwargs):
+            # print()
+            # st = time.perf_counter()
+            if epoch != 0:
+                model.fit(X_train, Y_train, batch_size=256, verbose=0)
+            # print(f"model fit: {seed} {epoch}", time.perf_counter() - st)
+
+            # st = time.perf_counter()
+            loss, acc = model.evaluate(X_test, Y_test, batch_size=16384, verbose=0)
+            # print(f"model evaluate: {seed} {epoch}", time.perf_counter() - st)
+
+            # st = time.perf_counter()
+            # _, scores, _ = test.eval_model(model, window=window)
+            # valid_score = np.mean(scores[: test_budget // 2])
+            # test_score = np.mean(scores[test_budget // 2 :])
+            valid_score = 0
+            test_score = 0
+            # print(f"model eval_model: {seed} {epoch}", time.perf_counter() - st)
+            at_best, at_patience = stopper.should_stop(loss)
+            if at_best:
+                best = model.get_weights()
+                best_output = get_output(
+                    seed,
+                    depth - 1,
+                    window,
+                    mode,
+                    stagei,
+                    skill_str,
+                    budget_str,
+                    opt,
+                    lr,
+                    num_nodes,
+                    num_layers,
+                    epoch,
+                    loss,
+                    acc,
+                    valid_score,
+                    stopper.wait,
+                    stopper.patience,
+                    test_score,
+                )
+                best_test = test_score
+
+            if at_patience:
+                if write:
+                    write_output(best_output)
+                break
+
     del X_train, Y_train, X_test, Y_test
     del train, test
     del model
     tf.keras.backend.clear_session()
     gc.collect()
-    print(f"deleting: {seed} {depth} {skill}", time.perf_counter() - st)
+    if verbose:
+        print(
+            f"deleting: {seed} {depth} {skill_str} {budget_str}",
+            time.perf_counter() - st,
+        )
+    return stopper.best_value, best_test
+
+
+def get_output(*args):
+    return ",".join([str(a) for a in args])
+
+
+def write_output(output):
+    with open("/storage1/fs1/chien-ju.ho/Active/tree/output24.txt", "a") as f:
+        print(output, file=f, flush=True)
 
 
 # @profile
-def single_exp(seeds, decisions, windows, modes, budgets, skills, opts, lrs):
-    print("importing tensorflow")
-    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-    os.environ["MPLCONFIGDIR"] = "/tmp/"
-    import tensorflow as tf
-    import numpy as np
-
-    tf.config.set_visible_devices([], "GPU")
-
-    print("finished importing tensorflow")
+def single_exp(seeds, decisions, windows, modes, skills, budgets):
 
     tqdm_kwargs = {"ncols": 80, "leave": True, "disable": True}
 
-    combos = list(product(seeds, decisions, windows, modes, budgets, skills, opts, lrs))
-    print(combos)
+    combos = list(product(seeds, decisions, windows, modes, skills, budgets))
+    print(len(combos))
     for combo in tqdm(combos, **tqdm_kwargs):
         exp(*combo)
 
 
-def write_output(*args):
-    with open("/storage1/fs1/chien-ju.ho/Active/tree/output18.txt", "a") as f:
-        print(",".join([str(a) for a in args]), file=f, flush=True)
+# def main_multi(decisions, start, end):
+#     tqdm_kwargs = {"ncols": 80, "leave": False, "disable": True}
+#     workers = 10
+
+#     skills = "ABCD"[:decisions]
+#     baby, rev = [], []
+#     for i in range(1, decisions):
+#         baby.append(skills[:i])
+#     for i in range(decisions):
+#         baby.append(skills[i:])
+#         rev.append(skills[i:])
+#     onepass = "_".join(skills)
+#     baby = "_".join(baby)
+#     rev = "_".join(rev)
+#     skills = [baby, rev, onepass] + [i for i in skills[1:]]
+
+#     windows = [0]
+#     modes = ["normal-0-0", "normal-1-0", "normal-2-0"]
+#     budgets = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+
+#     seeds = list(range(start, end))
+#     multi_combos = [
+#         [seeds[i::workers], [decisions], windows, modes, budgets, skills]
+#         for i in range(workers)
+#     ]
+#     multi_combos = list(zip(*multi_combos))
+
+#     print(len(multi_combos))
+#     print([len(i) for i in multi_combos])
+
+#     process_map(single_exp, *multi_combos, max_workers=workers, **tqdm_kwargs)
 
 
-def main(decisions, window, skills, mode, budget, start, end, opt, lr):
-    single_exp(
+def main(decisions, window, skills, budget_str, mode, start, end):
+    return single_exp(
         np.arange(start, end),
         [decisions],
         [window],
         [mode],
-        [budget],
         skills,
-        [opt],
-        [lr],
+        [budget_str],
     )
+
+
+def str_to_float(s):
+    if "/" not in s:
+        return float(s)
+    i, j = s.split("/")
+    return float(i) / float(j)
 
 
 if __name__ == "__main__":
 
-    decisions = int(sys.argv[1])
-    mode = sys.argv[2]
-    budget = int(sys.argv[3])
-    start, end = [int(i) for i in sys.argv[4].split("-")]
-    opt = sys.argv[5]
-    lr = float(sys.argv[6])
+    # decisions = int(sys.argv[1])
+    # start, end = [int(i) for i in sys.argv[2].split("-")]
+    # main_multi(decisions, start, end)
 
-    # window = min(12, decisions)
-    # skills = [s for s in [2, 4, 6, 8] if s <= window]
-    window = 0
+    if sys.argv[1] == "single":
 
-    skills = [(i, 0) for i in range(1, decisions + 1)] + [
-        (decisions, i) for i in (0.01, 0.1, 1)
-    ]
+        decisions = int(sys.argv[2])
+        mode = sys.argv[3]
+        budget_str = sys.argv[4]
 
-    main(decisions, window, skills, mode, budget, start, end, opt, lr)
+        start, end = [int(i) for i in sys.argv[5].split("-")]
+        window = 0
 
-    # budgets = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
-    # budgets = [1, 10, 100, 1000, 10000]
-    # budgets = [10000]
-    # skills = [s for s in [2, 4, 6, 8, 10, 12] if s <= depth]
-    # skills = [s for s in [2, 4, 6, 8] if s <= depth]
-    # skills = [s for s in [12] if s <= depth]
+        skills = "ABCD"[:decisions]
+        baby, rev = [], []
+        for i in range(1, decisions):
+            baby.append(skills[:i])
+        for i in range(decisions):
+            baby.append(skills[i:])
+            rev.append(skills[i:])
 
-    # seeds = np.arange(start, end)
-    # seeds = np.split(seeds, WORKERS)
+        onepass = "_".join(skills)
+        baby = "_".join(baby)
+        rev = "_".join(rev)
+        skills_strs = [baby, rev, onepass] + [i for i in skills[1:]]
+        print(skills_strs)
 
-    # combos = [
-    #     (seed, [depth], modes, budgets, skills, [opt], [lr], i + 1)
-    #     for i, seed in enumerate(seeds)
-    # ]
+        main(decisions, window, skills_strs, budget_str, mode, start, end)
 
-    # process_kwargs = {
-    #     "ncols": 80,
-    #     "max_workers": WORKERS,
-    #     "disable": False,
-    #     "position": 0,
-    # }
-    # scores = process_map(multi_exp, *zip(*combos), **process_kwargs)
+    if sys.argv[1] == "algo":
+
+        decisions = int(sys.argv[2])
+        mode = sys.argv[3]
+        start_budget = int(sys.argv[4])
+        end_budget = int(sys.argv[5])
+        trial_inc = str_to_float(sys.argv[6])
+        budget_inc = str_to_float(sys.argv[7])
+        window = 0
+
+        skills = "ABCD"[:decisions]
+        onepass = "_".join(skills)
+        skills_strs = [onepass]
+
+        start, end = [int(i) for i in sys.argv[8].split("-")]
+
+        for seed in range(start, end):
+
+            budget = np.ones(decisions) * start_budget / decisions
+            budget = budget.astype(int)
+            while sum(budget) < end_budget:
+                cur = sum(budget)
+                branch_add = np.ceil(cur * trial_inc).astype(int)
+                branch_vals = {}
+                print(f"{cur} - {budget}")
+                print("{")
+                for i in range(decisions):
+                    branch_budget = budget.copy()
+                    branch_budget[i] += branch_add
+                    # valid_score, test_score = np.random.random(2).round(2)
+                    _, test_score = exp(
+                        seed,
+                        decisions,
+                        window,
+                        mode,
+                        onepass,
+                        branch_budget,
+                        write=False,
+                        verbose=False,
+                    )
+                    branch_vals[i] = test_score
+                    print(f"    {branch_budget}: {branch_vals[i]}")
+                print("}")
+
+                best_branch = max(branch_vals, key=branch_vals.get)
+                print(f"Best branch: {best_branch}")
+
+                total_next_budget = (
+                    np.ceil(cur * budget_inc / start_budget).astype(int) * start_budget
+                )
+                print(budget, total_next_budget)
+                # budget += branch_add
+                budget[best_branch] += total_next_budget - cur
+                print(budget)
+
+                _, test_score_chosen = exp(
+                    seed,
+                    decisions,
+                    window,
+                    mode,
+                    onepass,
+                    budget,
+                    write=False,
+                    verbose=False,
+                )
+                print(f"Chosen Split - {test_score_chosen:.2f}")
+
+                _, test_score_equal = exp(
+                    seed,
+                    decisions,
+                    window,
+                    mode,
+                    onepass,
+                    np.ones(decisions) * sum(budget) // decisions,
+                    write=False,
+                    verbose=False,
+                )
+                print(f"Random Split - {test_score_equal:.2f}")
+
+                _, test_score_high = exp(
+                    seed,
+                    decisions,
+                    window,
+                    mode,
+                    onepass,
+                    np.array([0 for _ in range(decisions - 1)] + [sum(budget)]),
+                    write=False,
+                    verbose=False,
+                )
+                print(f"High Split - {test_score_high:.2f}")
+
+                with open("algo4.txt", "a") as f:
+                    print(
+                        f"{seed};{decisions};{mode};{start_budget};{end_budget};{trial_inc};{budget_inc};{best_branch};{branch_vals};{budget};{test_score_chosen};{test_score_equal};{test_score_high}",
+                        file=f,
+                        flush=True,
+                    )
+
+                print("\n")
+            print(f"{sum(budget)} - {budget}")
