@@ -86,14 +86,41 @@ class Tree:
             for i, reward in enumerate(rewards):
                 l = self._l(i)
                 r = self._r(i)
-                if reward < 0.5:
+                if reward < 0.2:
                     self.arr[l] += a
                     self.arr[r] += -b
-                    self.arr[i] = 0
-                elif reward < 0.1:
+                    # self.arr[i] = 0
+                elif reward < 0.4:
                     self.arr[l] += -b
                     self.arr[r] += a
-                    self.arr[i] = 0
+                    # self.arr[i] = 0
+        elif mode.startswith("critroot-"):
+            self.arr = self.rng.random(self.n)
+            rewards = self.rng.random(self.n // 2)
+            a, b, c = [float(i) for i in mode.split("-")[1:]]
+            for i, reward in enumerate(rewards):
+                r = self._r(i)
+                if reward < c / 2:
+                    self.arr[i] += -b
+                    self.arr[self._r(i)] += a
+                elif reward < c:
+                    self.arr[i] += -b
+                    self.arr[self._l(i)] += a
+        elif mode.startswith("crit123-"):
+            self.arr = self.rng.random(self.n)
+            rewards = self.rng.random(self.n // 2)
+            a, b, c, d = [float(i) for i in mode.split("-")[1:]]
+            for i, reward in enumerate(rewards):
+                l = self._l(i)
+                r = self._r(i)
+                if reward < d / 2:
+                    self.arr[i] += -a
+                    self.arr[l] += b
+                    self.arr[r] += -c
+                elif reward < d:
+                    self.arr[i] += -a
+                    self.arr[l] += -c
+                    self.arr[r] += b
 
         else:
             raise ValueError(
@@ -332,10 +359,11 @@ def exp(
     patience=20,
     write=True,
     opt="sgd",
-    lr=0.1,
+    lr=1,
     num_nodes=16,
     num_layers=1,
     verbose=True,
+    perf_stopping=False,
 ):
     depth = decisions + 1
     if verbose:
@@ -352,7 +380,7 @@ def exp(
 
         elif budget.startswith("right_"):
             budget_str = budget
-            budget = int(budget_str.split("_")[1]) * np.array([0.125, 0.125, 0.25, 0.5])
+            budget = int(budget_str.split("_")[1]) * np.array([0.1, 0.125, 0.25, 0.5])
 
         elif budget.startswith("equal_"):
             budget_str = budget
@@ -399,8 +427,13 @@ def exp(
     if verbose:
         print(skills)
 
-    stopper = EarlyStopper(patience, minimize=False)
-    best_test = -np.inf
+    if perf_stopping:
+        stopper = EarlyStopper(patience, minimize=False)
+        best_test = -np.inf
+
+    else:
+        stopper = EarlyStopper(patience, minimize=True)
+        best_test = np.inf
 
     for stagei, stage in enumerate(skills):
         if verbose:
@@ -457,28 +490,30 @@ def exp(
         }
 
         stopper.wait = 0
-        for epoch in tqdm(range(2000), **tqdm_kwargs):
+        for epoch in tqdm(range(10000), **tqdm_kwargs):
             # print()
             # st = time.perf_counter()
             if epoch != 0:
-                model.fit(X_train, Y_train, batch_size=256, verbose=0)
+                model.fit(X_train, Y_train, batch_size=64, verbose=0)
             # print(f"model fit: {seed} {epoch}", time.perf_counter() - st)
 
             # st = time.perf_counter()
             loss, acc = model.evaluate(X_test, Y_test, batch_size=16384, verbose=0)
             # print(f"model evaluate: {seed} {epoch}", time.perf_counter() - st)
 
-            # st = time.perf_counter()
-            # _, scores, _ = test.eval_model(model, window=window)
-            # valid_score = np.mean(scores[: test_budget // 2])
-            # test_score = np.mean(scores[test_budget // 2 :])
-            valid_score = 0
-            test_score = 0
+            if perf_stopping:
+                st = time.perf_counter()
+                _, scores, _ = test.eval_model(model, window=window)
+                valid_score = np.mean(scores[: test_budget // 2])
+                test_score = np.mean(scores[test_budget // 2 :])
+            else:
+                valid_score, test_score = 0, 0
             # print(f"model eval_model: {seed} {epoch}", time.perf_counter() - st)
             at_best, at_patience = stopper.should_stop(loss)
             if at_best:
                 best = model.get_weights()
-                best_output = get_output(
+                best_test = test_score
+                best_output = [
                     seed,
                     depth - 1,
                     window,
@@ -497,12 +532,16 @@ def exp(
                     stopper.wait,
                     stopper.patience,
                     test_score,
-                )
-                best_test = test_score
+                ]
 
             if at_patience:
+                if perf_stopping == False:
+                    model.set_weights(best)
+                    _, scores, _ = test.eval_model(model, window=window)
+                    best_output[17] = np.mean(scores)
+
                 if write:
-                    write_output(best_output)
+                    write_output(get_output(best_output))
                 break
 
     del X_train, Y_train, X_test, Y_test
@@ -518,12 +557,12 @@ def exp(
     return stopper.best_value, best_test
 
 
-def get_output(*args):
+def get_output(args):
     return ",".join([str(a) for a in args])
 
 
 def write_output(output):
-    with open("/storage1/fs1/chien-ju.ho/Active/tree/output24.txt", "a") as f:
+    with open("/storage1/fs1/chien-ju.ho/Active/tree/output27.txt", "a") as f:
         print(output, file=f, flush=True)
 
 
@@ -605,17 +644,20 @@ if __name__ == "__main__":
         window = 0
 
         skills = "ABCD"[:decisions]
+
+        # skills_strs = [i for i in skills]  # Only 4.1, not 4.2
+
         baby, rev = [], []
         for i in range(1, decisions):
             baby.append(skills[:i])
         for i in range(decisions):
             baby.append(skills[i:])
             rev.append(skills[i:])
-
         onepass = "_".join(skills)
         baby = "_".join(baby)
         rev = "_".join(rev)
         skills_strs = [baby, rev, onepass] + [i for i in skills[1:]]
+
         print(skills_strs)
 
         main(decisions, window, skills_strs, budget_str, mode, start, end)
