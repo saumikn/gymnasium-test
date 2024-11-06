@@ -79,34 +79,7 @@ class Tree:
             a = int(mode.split("-")[1]) / 100
             b = int(mode.split("-")[2]) / 100
             self.arr[1::2] = self.rng.uniform(a, b, self.arr[1::2].shape)
-        elif mode.startswith("critical-"):
-            self.arr = self.rng.random(self.n)
-            rewards = self.rng.random(self.n // 2)
-            a, b = [int(i) for i in mode.split("-")[1:]]
-            for i, reward in enumerate(rewards):
-                l = self._l(i)
-                r = self._r(i)
-                if reward < 0.2:
-                    self.arr[l] += a
-                    self.arr[r] += -b
-                    # self.arr[i] = 0
-                elif reward < 0.4:
-                    self.arr[l] += -b
-                    self.arr[r] += a
-                    # self.arr[i] = 0
-        elif mode.startswith("critroot-"):
-            self.arr = self.rng.random(self.n)
-            rewards = self.rng.random(self.n // 2)
-            a, b, c = [float(i) for i in mode.split("-")[1:]]
-            for i, reward in enumerate(rewards):
-                r = self._r(i)
-                if reward < c / 2:
-                    self.arr[i] += -b
-                    self.arr[self._r(i)] += a
-                elif reward < c:
-                    self.arr[i] += -b
-                    self.arr[self._l(i)] += a
-        elif mode.startswith("crit123-"):
+        elif mode.startswith("crit-"):
             self.arr = self.rng.random(self.n)
             rewards = self.rng.random(self.n // 2)
             a, b, c, d = [float(i) for i in mode.split("-")[1:]]
@@ -443,11 +416,19 @@ def exp(
 
         X_trains, Y_trains, X_tests, Y_tests = [], [], [], []
 
-        for s, budget in stage:
+        train_offset = int(1e8)
+        test_budget, test_offset = 16384, int(1e9)
+
+        for si, (s, budget) in enumerate(stage):
             st = time.perf_counter()
             if not budget:
                 continue
-            train = Forest(depth, mode, budget * seed, budget * (seed + 1))
+            train = Forest(
+                depth,
+                mode,
+                budget * seed + si * train_offset,
+                budget * (seed + 1) + si * train_offset,
+            )
             X_train, Y_train = train.get_training_data(s, window=window)
             if verbose:
                 print(
@@ -455,13 +436,12 @@ def exp(
                 )
 
             st = time.perf_counter()
-            test_budget, test_offset = 16384, int(1e9)
             # test_budget, test_offset = 4096, int(1e9)
             test = Forest(
                 depth,
                 mode,
-                test_budget * seed + test_offset,
-                test_budget * (seed + 1) + test_offset,
+                test_budget * seed + si * train_offset + test_offset,
+                test_budget * (seed + 1) + si * train_offset + test_offset,
             )
             X_test, Y_test = test.get_training_data(s, window=window)
             if verbose:
@@ -512,7 +492,6 @@ def exp(
             at_best, at_patience = stopper.should_stop(loss)
             if at_best:
                 best = model.get_weights()
-                best_test = test_score
                 best_output = [
                     seed,
                     depth - 1,
@@ -538,7 +517,8 @@ def exp(
                 if perf_stopping == False:
                     model.set_weights(best)
                     _, scores, _ = test.eval_model(model, window=window)
-                    best_output[17] = np.mean(scores)
+                    best_test = np.mean(scores)
+                    best_output[17] = best_test
 
                 if write:
                     write_output(get_output(best_output))
@@ -562,7 +542,7 @@ def get_output(args):
 
 
 def write_output(output):
-    with open("/storage1/fs1/chien-ju.ho/Active/tree/output27.txt", "a") as f:
+    with open("/scratch1/fs1/chien-ju.ho/Active/tree/output28.txt", "a") as f:
         print(output, file=f, flush=True)
 
 
@@ -575,39 +555,6 @@ def single_exp(seeds, decisions, windows, modes, skills, budgets):
     print(len(combos))
     for combo in tqdm(combos, **tqdm_kwargs):
         exp(*combo)
-
-
-# def main_multi(decisions, start, end):
-#     tqdm_kwargs = {"ncols": 80, "leave": False, "disable": True}
-#     workers = 10
-
-#     skills = "ABCD"[:decisions]
-#     baby, rev = [], []
-#     for i in range(1, decisions):
-#         baby.append(skills[:i])
-#     for i in range(decisions):
-#         baby.append(skills[i:])
-#         rev.append(skills[i:])
-#     onepass = "_".join(skills)
-#     baby = "_".join(baby)
-#     rev = "_".join(rev)
-#     skills = [baby, rev, onepass] + [i for i in skills[1:]]
-
-#     windows = [0]
-#     modes = ["normal-0-0", "normal-1-0", "normal-2-0"]
-#     budgets = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
-
-#     seeds = list(range(start, end))
-#     multi_combos = [
-#         [seeds[i::workers], [decisions], windows, modes, budgets, skills]
-#         for i in range(workers)
-#     ]
-#     multi_combos = list(zip(*multi_combos))
-
-#     print(len(multi_combos))
-#     print([len(i) for i in multi_combos])
-
-#     process_map(single_exp, *multi_combos, max_workers=workers, **tqdm_kwargs)
 
 
 def main(decisions, window, skills, budget_str, mode, start, end):
@@ -670,13 +617,21 @@ if __name__ == "__main__":
         end_budget = int(sys.argv[5])
         trial_inc = str_to_float(sys.argv[6])
         budget_inc = str_to_float(sys.argv[7])
+        start, end = [int(i) for i in sys.argv[8].split("-")]
         window = 0
 
-        skills = "ABCD"[:decisions]
+        # skills = "ABCD"[:decisions]
+        skills = "AD"
+        baby, rev = [], []
+        for i in range(1, decisions):
+            baby.append(skills[:i])
+        for i in range(decisions):
+            baby.append(skills[i:])
+            rev.append(skills[i:])
         onepass = "_".join(skills)
-        skills_strs = [onepass]
-
-        start, end = [int(i) for i in sys.argv[8].split("-")]
+        baby = "_".join(baby)
+        rev = "_".join(rev)
+        skills_strs = [baby]
 
         for seed in range(start, end):
 
@@ -692,7 +647,7 @@ if __name__ == "__main__":
                     branch_budget = budget.copy()
                     branch_budget[i] += branch_add
                     # valid_score, test_score = np.random.random(2).round(2)
-                    _, test_score = exp(
+                    loss, test_score = exp(
                         seed,
                         decisions,
                         window,
@@ -702,12 +657,13 @@ if __name__ == "__main__":
                         write=False,
                         verbose=False,
                     )
-                    branch_vals[i] = test_score
+                    branch_vals[i] = (loss, test_score)
                     print(f"    {branch_budget}: {branch_vals[i]}")
                 print("}")
 
-                best_branch = max(branch_vals, key=branch_vals.get)
-                print(f"Best branch: {best_branch}")
+                best_branch = max(branch_vals, key=lambda x: branch_vals[x][1])
+                print(f"Best branch: {best_branch} - {branch_vals[best_branch]}")
+                loss_algo, test_score_algo = branch_vals[best_branch]
 
                 total_next_budget = (
                     np.ceil(cur * budget_inc / start_budget).astype(int) * start_budget
@@ -753,9 +709,9 @@ if __name__ == "__main__":
                 )
                 print(f"High Split - {test_score_high:.2f}")
 
-                with open("algo4.txt", "a") as f:
+                with open("algo5.txt", "a") as f:
                     print(
-                        f"{seed};{decisions};{mode};{start_budget};{end_budget};{trial_inc};{budget_inc};{best_branch};{branch_vals};{budget};{test_score_chosen};{test_score_equal};{test_score_high}",
+                        f"{seed};{decisions};{mode};{start_budget};{end_budget};{trial_inc};{budget_inc};{best_branch};{branch_vals};{budget};{loss_algo};{test_score_algo};{test_score_chosen};{test_score_equal};{test_score_high}",
                         file=f,
                         flush=True,
                     )
