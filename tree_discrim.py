@@ -7,6 +7,7 @@ from itertools import product
 import os
 import gc
 import time
+import pathlib
 
 print("importing tensorflow")
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -301,8 +302,6 @@ def get_budget_str(decisions, budget):
             budget = dict(zip("ACE", budget))
         elif decisions == 3:
             budget = dict(zip("ABC", budget))
-        if verbose:
-            print(budget)
 
     if decisions == 4:
         if isinstance(budget, (list, np.ndarray)):
@@ -327,8 +326,6 @@ def get_budget_str(decisions, budget):
 
         budget = budget.astype(int)
         budget = dict(zip("ABCD", budget))
-        if verbose:
-            print(budget)
 
     elif decisions == 2:
         if isinstance(budget, list):
@@ -349,16 +346,10 @@ def get_budget_str(decisions, budget):
 
         budget = budget.astype(int)
         budget = dict(zip("AB", budget))
-        if verbose:
-            print(budget)
     return budget, budget_str
 
 
 def train_model(
-    seed,
-    depth,
-    stage,
-    verbose,
     perf_stopping,
     patience,
     model,
@@ -367,14 +358,14 @@ def train_model(
     X_valid,
     Y_valid,
     test_forest,
+    window,
 ):
     tqdm_kwargs = {
         "ncols": 80,
         "leave": True,
-        "desc": f"Seed {seed} Depth {depth} Stage {'+'.join(s for s, _ in stage)}",
+        # "desc": f"Seed {seed} Depth {depth} Stage {'+'.join(s for s, _ in stage)}",
         # "position": 1,
-        "disable": not verbose,
-        # "disable": True,
+        "disable": False,
     }
     if perf_stopping:
         stopper = EarlyStopper(patience, minimize=False)
@@ -388,16 +379,78 @@ def train_model(
         loss, acc = model.evaluate(
             X_valid, Y_valid, batch_size=min(16384, len(X_valid)), verbose=0
         )
+        # print(f"{epoch}: {loss:.3f} {stopper.wait}")
 
         at_best, at_patience = stopper.should_stop(loss)
         if at_best or acc == 1:
-            best = model.get_weights(), loss, acc, stopper.wait, stopper.patience, 0
+            best = [model.get_weights(), loss, acc, 0]
 
         if at_patience or acc == 1:
             model.set_weights(best[0])
             _, scores, _ = test_forest.eval_model(model, window=window)
             best[-1] = np.mean(scores)
+            print(f"Best - {best[-1]:.3f}")
             return best
+
+
+def get_2level_XY(seed, skills, depth, window):
+    train_offset, test_offset, test_budget = int(1e8), int(1e9), 16384
+    test_forest = Forest(
+        depth,
+        mode,
+        test_budget * seed + test_offset,
+        test_budget * (seed + 1) + test_offset,
+    )
+    s0, b0 = skills[0][0]
+    train_forest0 = Forest(
+        depth,
+        mode,
+        b0 * seed + 0 * train_offset,
+        b0 * (seed + 1) + 0 * train_offset,
+    )
+    X0, Y0 = train_forest0.get_training_data(s0, window=window)
+
+    if len(skills[0]) == 2:
+        s1, b1 = skills[0][1]
+        train_forest1 = Forest(
+            depth,
+            mode,
+            b1 * seed + 1 * train_offset,
+            b1 * (seed + 1) + 1 * train_offset,
+        )
+        X1, Y1 = train_forest1.get_training_data(s1, window=window)
+    else:
+        X1, Y1 = None, None
+
+    return X0, Y0, X1, Y1, test_forest
+
+
+def get_XY(seed, stage, depth, mode, window, offset=int(1e8), test_budget=16384):
+    o0, o1, o2 = offset, offset * 2, offset * 3
+    s, b = stage
+    b0, b1 = int(b * 0.75), int(b * 0.25)
+    seed1 = seed + 1
+    train_forest = Forest(
+        depth,
+        mode,
+        b0 * seed + o0,
+        b0 * seed1 + o0,
+    )
+    valid_forest = Forest(
+        depth,
+        mode,
+        b1 * seed + o1,
+        b1 * seed1 + o1,
+    )
+    test_forest = Forest(
+        depth,
+        mode,
+        test_budget * seed + o2,
+        test_budget * seed1 + o2,
+    )
+    X0, Y0 = train_forest.get_training_data(s, window=window)
+    X1, Y1 = valid_forest.get_training_data(s, window=window)
+    return (X0, Y0), (X1, Y1), test_forest
 
 
 def exp(
@@ -406,15 +459,14 @@ def exp(
     mode,
     skill_str,
     budget,
-    discrim_threshold,
+    discrim_thresholds,
     discrim_steps,
     window=0,
     patience=20,
-    write=True,
     opt="adam",
     lr=1,
-    num_nodes=16,
-    num_layers=1,
+    num_nodes=64,
+    num_layers=3,
     verbose=True,
     perf_stopping=False,
 ):
@@ -422,128 +474,199 @@ def exp(
     if verbose:
         print(f"\n\n\nStarting experiment: Seed-{seed} Depth-{depth} Skill-{skill_str}")
 
-    st = time.perf_counter()
-    model = make_model(depth, window, opt, lr, num_nodes, num_layers)
-    best = model.get_weights()
-
     budget, budget_str = get_budget_str(decisions, budget)
     skills = [[(s, budget[s]) for s in stage] for stage in skill_str.split("_")]
 
-    for stagei, stage in enumerate(skills):
-        if verbose:
-            print(stage)
-        model = make_model(model=model)
-        model.set_weights(best)
-        train_offset, test_offset, test_budget = int(1e8), int(1e9), 16384
-        test_forest = Forest(
-            depth,
-            mode,
-            test_budget * seed + si * train_offset + test_offset,
-            test_budget * (seed + 1) + si * train_offset + test_offset,
-        )
+    data = {}
+    for stage in skills:
+        for s, b in stage:
+            if s in data:
+                continue
+            data[s] = get_XY(seed, (s, b), depth, mode, window)
 
-        for si, (s, budget) in enumerate(stage):
-            st = time.perf_counter()
-            train_forest = Forest(
-                depth,
-                mode,
-                budget * seed + si * train_offset,
-                budget * (seed + 1) + si * train_offset,
-            )
-            X, Y = train_forest.get_training_data(s, window=window)
-            if si == 0:
-                X_all, Y_all = X, Y
-            elif discrim_threshold == 0:
-                pass
-            elif discrim_threshold == 1:
-                X_all, Y_all = np.concatenate([X_all, X]), np.concatenate([Y_all, Y])
-            else:
-                discriminator = make_model(
-                    depth, window, opt, lr, num_nodes, num_layers
+    for t in discrim_thresholds:
+        model = make_model(depth, window, opt, lr, num_nodes, num_layers)
+        best = model.get_weights()
+        for stagei, stage in enumerate(skills):
+            X_trains, Y_trains, X_valids, Y_valids = [], [], [], []
+            for s, b in stage:
+                (Xt, Yt), (Xv, Yv), test_forest = data[s]
+                X_trains.append(Xt)
+                Y_trains.append(Yt)
+                X_valids.append(Xv)
+                Y_valids.append(Yv)
+            if not X_trains:
+                continue
+            X_trains = tf.convert_to_tensor(np.concatenate(X_trains))
+            Y_trains = tf.convert_to_tensor(np.concatenate(Y_trains))
+            X_valids = tf.convert_to_tensor(np.concatenate(X_valids))
+            Y_valids = tf.convert_to_tensor(np.concatenate(Y_valids))
+
+            stopper = EarlyStopper(patience, minimize=True)
+            model = make_model(model=model)
+            model.set_weights(best)
+            tqdm_kwargs = {
+                "ncols": 80,
+                "leave": True,
+                "desc": f"Seed {seed} Depth {depth} Stage {'+'.join(s for s, _ in stage)}",
+                # "position": 1,
+                "disable": not verbose,
+            }
+            for epoch in tqdm(range(10000), **tqdm_kwargs):
+                if epoch != 0:
+                    model.fit(X_trains, Y_trains, batch_size=64, verbose=0)
+                loss, acc = model.evaluate(
+                    X_valids, Y_valids, batch_size=16384, verbose=0
                 )
-                discX = np.concatenate([X, X_all])
-                discY = np.concatenate([np.zeros_like(Y), np.ones_like(Y_all)])
-                ds = tf.data.Dataset.from_tensor_slices((discX, discY))
-                ds = ds.repeat().shuffle(100000).batch(32).take(discrim_steps)
-                acc = discriminator.fit(ds, verbose=1).history["accuracy"][0]
-                low_pred = discriminator(X).numpy()
-                mask = low_pred[:, 1] <= discrim_threshold
-                print(
-                    f"Of the {len(X)} data points in {s}, we are keeping {mask.sum()} points ({mask.mean():.1%})"
-                )
-                X, Y = X[mask], Y[mask]
-                X_all = np.concatenate([X_all, X])
-                Y_all = np.concatenate([Y_all, Y])
-
-        train_size = int(len(X_all) * 0.75)
-        print(
-            f"\nTotal training size: {train_size}; total evaluation size: {len(X_all)-train_size}\n"
-        )
-        X_train = tf.convert_to_tensor(X_all[:train_size])
-        Y_train = tf.convert_to_tensor(Y_all[:train_size])
-
-        X_valid = tf.convert_to_tensor(X_all[train_size:])
-        Y_valid = tf.convert_to_tensor(Y_all[train_size:])
-
-        tqdm_kwargs = {
-            "ncols": 80,
-            "leave": True,
-            "desc": f"Seed {seed} Depth {depth} Stage {'+'.join(s for s, _ in stage)}",
-            # "position": 1,
-            "disable": not verbose,
-            # "disable": True,
-        }
-
-        stopper.wait = 0
-        for epoch in tqdm(range(10000), **tqdm_kwargs):
-            if epoch != 0:
-                model.fit(X_train, Y_train, batch_size=32, verbose=0)
-            loss, acc = model.evaluate(
-                X_valid, Y_valid, batch_size=min(16384, len(X_valid)), verbose=0
-            )
-
-            at_best, at_patience = stopper.should_stop(loss)
-            # print(f"{epoch} {loss:.4f} {acc:.1f} {stopper.wait}")
-            if at_best or acc == 1:
-                best = model.get_weights()
-                best_output = [
-                    seed,
-                    depth - 1,
-                    window,
-                    mode,
-                    stagei,
-                    skill_str,
-                    budget_str,
-                    discrim_threshold,
-                    discrim_steps,
-                    opt,
-                    lr,
-                    num_nodes,
-                    num_layers,
-                    epoch,
-                    loss,
-                    acc,
-                    stopper.wait,
-                    stopper.patience,
-                    0,
-                ]
-
-            if at_patience or acc == 1:
-                if perf_stopping == False:
-                    model.set_weights(best)
-                    _, scores, _ = test_forest.eval_model(model, window=window)
-                    best_test = np.mean(scores)
-                    best_output[-1] = best_test
-
-                if write:
+                at_best, at_patience = stopper.should_stop(loss)
+                if at_best:
+                    best = model.get_weights()
+                    best_output = [seed, depth - 1, window, mode, stagei, skill_str, budget_str, t, discrim_steps, opt, lr, num_nodes, num_layers, loss, acc, 0]  # fmt: skip
+                if at_patience:
+                    if perf_stopping == False:
+                        model.set_weights(best)
+                        _, scores, _ = test_forest.eval_model(model, window=window)
+                        best_test = np.mean(scores)
+                        best_output[-1] = best_test
                     write_output(get_output(best_output))
-                break
-    if verbose:
-        print(
-            f"deleting: {seed} {depth} {skill_str} {budget_str}",
-            time.perf_counter() - st,
+                    break
+
+    return
+
+    assert len(skills) == 1
+
+    if len(skills[0]) == 1:
+        model = make_model(depth, window, opt, lr, num_nodes, num_layers)
+        X0, Y0, X1, Y1, test_forest = get_2level_XY(seed, skills, depth, window)
+        train_size = int(len(X0) * 0.75)
+        X_train = tf.convert_to_tensor(X0[:train_size])
+        Y_train = tf.convert_to_tensor(Y0[:train_size])
+        X_valid = tf.convert_to_tensor(X0[train_size:])
+        Y_valid = tf.convert_to_tensor(Y0[train_size:])
+
+        _, loss, acc, test = train_model(
+            perf_stopping,
+            patience,
+            model,
+            X_train,
+            Y_train,
+            X_valid,
+            Y_valid,
+            test_forest,
+            window,
         )
-    return stopper.best_value, best_test
+        best_output = [
+            seed,
+            depth - 1,
+            window,
+            mode,
+            skill_str,
+            budget_str,
+            0,
+            0,
+            opt,
+            lr,
+            num_nodes,
+            num_layers,
+            loss,
+            acc,
+            test,
+        ]
+        write_output(get_output(best_output))
+
+    elif len(skills[0]) == 2:
+        X0, Y0, X1, Y1, test_forest = get_2level_XY(seed, skills, depth, window)
+
+        print(X0.shape, Y0.shape, X1.shape, Y1.shape)
+
+        discriminator = make_model(depth, window, opt, lr, num_nodes, num_layers)
+        discX = np.concatenate([X0, X1])
+        discY = np.concatenate([np.ones_like(Y0), np.zeros_like(Y1)])
+        print(discX.shape, discY.shape)
+        ds = tf.data.Dataset.from_tensor_slices((discX, discY))
+        ds = ds.repeat().shuffle(100000).batch(32).take(discrim_steps)
+        acc = discriminator.fit(ds, verbose=1).history["accuracy"][0]
+        low_pred = discriminator(X1).numpy()
+
+        print(low_pred.shape)
+        print(":" * 100)
+
+        last_mask = None
+        last_res = None
+
+        for t in discrim_thresholds:
+            print(f"Discrim Threshold - {t}")
+            model = make_model(depth, window, opt, lr, num_nodes, num_layers)
+
+            if t.startswith("p-"):
+                t2 = float(t.split("-")[1])
+                mask = low_pred[:, 1] <= np.quantile(low_pred[:, 1], t2)
+            elif t.startswith("p+"):
+                t2 = float(t.split("+")[1])
+                mask = low_pred[:, 1] >= np.quantile(low_pred[:, 1], t2)
+            elif t.startswith("r-"):
+                t2 = float(t.split("-")[1])
+                mask = np.zeros_like(low_pred[:, 1])
+                mask[: int(t2 * len(mask))] = 1
+                mask = mask.astype(bool)
+            else:
+                mask = (
+                    low_pred[:, 1] <= t
+                )  # Probability of being high skill is less than t
+            print(f"Num of matches: {mask.sum()}")
+
+            if sum(mask) == last_mask:
+                print("No change from last threshold, using last output")
+                loss, acc, test = last_res
+
+            else:
+                X_all = np.concatenate([X0, X1[mask]])
+                Y_all = np.concatenate([Y0, Y1[mask]])
+                print(X_all.shape, Y_all.shape)
+
+                train_size = int(len(X_all) * 0.75)
+                print(train_size)
+                X_train = tf.convert_to_tensor(X_all[:train_size])
+                Y_train = tf.convert_to_tensor(Y_all[:train_size])
+                X_valid = tf.convert_to_tensor(X_all[train_size:])
+                Y_valid = tf.convert_to_tensor(Y_all[train_size:])
+
+                print(X_train.shape, Y_train.shape, X_valid.shape, Y_valid.shape)
+
+                _, loss, acc, test = train_model(
+                    perf_stopping,
+                    patience,
+                    model,
+                    X_train,
+                    Y_train,
+                    X_valid,
+                    Y_valid,
+                    test_forest,
+                    window,
+                )
+                last_mask = sum(mask)
+                last_res = loss, acc, test
+
+            best_output = [
+                seed,
+                depth - 1,
+                window,
+                mode,
+                skill_str,
+                budget_str,
+                t,
+                discrim_steps,
+                opt,
+                lr,
+                num_nodes,
+                num_layers,
+                loss,
+                acc,
+                test,
+            ]
+            write_output(get_output(best_output))
+            # print(get_output(best_output))
+            print("-" * 50)
 
 
 def get_output(args):
@@ -551,7 +674,16 @@ def get_output(args):
 
 
 def write_output(output):
-    with open("/scratch1/fs1/chien-ju.ho/Active/tree/output34.txt", "a") as f:
+    OUTPUT_PATH = "/scratch1/fs1/chien-ju.ho/Active/tree/output38.txt"
+    if not pathlib.Path(OUTPUT_PATH).is_file():
+        with open(OUTPUT_PATH, "a") as f:
+            print(
+                "seed,decisions,window,mode,stagei,skills,budget,disc_thresh,discrim_steps,opt,lr,nodes,layers,loss,acc,test",
+                file=f,
+                flush=True,
+            )
+
+    with open(OUTPUT_PATH, "a") as f:
         print(output, file=f, flush=True)
 
 
@@ -567,7 +699,7 @@ def single_exp(*args):
 
 
 def main(
-    start, end, decisions, mode, skills, budget_str, discrim_threshold, discrim_steps
+    start, end, decisions, mode, skills, budget_str, discrim_thresholds, discrim_steps
 ):
     return single_exp(
         np.arange(start, end),
@@ -575,7 +707,7 @@ def main(
         [mode],
         skills,
         [budget_str],
-        [discrim_threshold],
+        [discrim_thresholds],
         [discrim_steps],
     )
 
@@ -599,8 +731,24 @@ if __name__ == "__main__":
         decisions = int(sys.argv[3])
         mode = sys.argv[4]
         budget_str = sys.argv[5]
-        discrim_threshold = float(sys.argv[6])
-        discrim_steps = int(sys.argv[7])
+        discrim_steps = int(sys.argv[6])
+        # discrim_thresholds = [0, 0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99, 1]
+        # discrim_thresholds = ['p-0', 'p-0.2', 'p-0.4', 'p-0.6', 'p-0.8', 'p-1', 'p+0', 'p+0.2', 'p+0.4', 'p+0.6', 'p+0.8', 'p+1']
+        # discrim_thresholds = [
+        #     "r-0",
+        #     "r-0.01",
+        #     "r-0.05",
+        #     "r-0.1",
+        #     "r-0.2",
+        #     "r-0.4",
+        #     "r-0.6",
+        #     "r-0.8",
+        #     "r-0.9",
+        #     "r-0.95",
+        #     "r-0.99",
+        #     "r-1",
+        # ]
+        discrim_thresholds = [1]
 
         # skills = "ABCD"[:decisions]
         # skills_strs = [i for i in skills]  # Only 4.1, not 4.2
@@ -616,51 +764,53 @@ if __name__ == "__main__":
         # skills_strs = [baby, rev, onepass] + [i for i in skills[1:]]
 
         if decisions == 3:
-            # skills_strs = ["C", "B", "A", "CBA", "CA"]
-            skills_strs = ["C", "B", "A"]
+            skills_strs = [
+                "C",
+                "B",
+                "A_C",
+                "CA_C",
+                "A_CA_C",
+                "CBA_CB_C",
+                "A_B_C",
+                "A_BA_CBA_CB_C",
+            ]
             print(skills_strs)
-            main(
-                start,
-                end,
-                decisions,
-                mode,
-                skills_strs,
-                budget_str,
-                discrim_threshold,
-                discrim_steps,
-            )
-
         if decisions == 4:
-            # skills_strs = ["DCBA", "D", "C", "B", "A"]
-            # skills_strs = ["D", "C", "B", "A", "DCBA", "DA"]
-            skills_strs = ["D", "C", "B", "A"]
-            # skills_strs = ["DCBA"]
+            skills_strs = [
+                "D",
+                "C",
+                "B",
+                "A_D",
+                "DA_D",
+                "A_DA_D",
+                "DCBA_DCB_DC_D",
+                "A_B_C_D",
+                "A_BA_CBA_DCBA_DCB_DC_D",
+            ]
             print(skills_strs)
-            main(
-                start,
-                end,
-                decisions,
-                mode,
-                skills_strs,
-                budget_str,
-                discrim_threshold,
-                discrim_steps,
-            )
-
         elif decisions == 5:
-            # skills_strs = ["E","C","A", "ECA", "EA"]
-            skills_strs = ["E", "C", "A"]
+            skills_strs = [
+                "E",
+                "C",
+                "A_E",
+                "EA_E",
+                "A_EA_E",
+                "ECA_EC_E",
+                "A_C_E",
+                "A_CA_ECA_EC_E",
+            ]
+            # skills_strs = ["EA"]
             print(skills_strs)
-            main(
-                start,
-                end,
-                decisions,
-                mode,
-                skills_strs,
-                budget_str,
-                discrim_threshold,
-                discrim_steps,
-            )
+        main(
+            start,
+            end,
+            decisions,
+            mode,
+            skills_strs,
+            budget_str,
+            discrim_thresholds,
+            discrim_steps,
+        )
 
     if sys.argv[1] == "algo":
 
