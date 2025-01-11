@@ -1,5 +1,5 @@
-# for SEED in {0..9}
-for SEED in {0..299}
+# for SEED in 0
+for SEED in {1..299}
 # for SEED in {100..499}
 do
 SEED1=$((${SEED}+1))
@@ -9,7 +9,8 @@ for DEPTH in 4
 do
 
 
-for MODE in 'crit-0-1-10-0.2'
+# for MODE in 'crit-0-1-10-0.2'
+for MODE in 'crit-8-10-0-0.2'
 do
 
 echo "TREEALGO_${SEED}_${DEPTH}_${MODE}"

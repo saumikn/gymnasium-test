@@ -674,7 +674,7 @@ def get_output(args):
 
 
 def write_output(output):
-    OUTPUT_PATH = "/scratch1/fs1/chien-ju.ho/Active/tree/output38.txt"
+    OUTPUT_PATH = "/storage1/fs1/chien-ju.ho/Active/tree/output38.txt"
     if not pathlib.Path(OUTPUT_PATH).is_file():
         with open(OUTPUT_PATH, "a") as f:
             print(
@@ -912,7 +912,7 @@ if __name__ == "__main__":
                 )
                 print(f"High Split - {test_score_high:.2f}")
 
-                with open("algo5.txt", "a") as f:
+                with open("algo.txt", "a") as f:
                     print(
                         f"{seed};{decisions};{mode};{start_budget};{end_budget};{trial_inc};{budget_inc};{best_branch};{branch_vals};{budget};{loss_algo};{test_score_algo};{test_score_chosen};{test_score_equal};{test_score_high}",
                         file=f,

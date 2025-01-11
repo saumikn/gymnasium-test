@@ -542,7 +542,7 @@ def get_output(args):
 
 
 def write_output(output):
-    with open("/scratch1/fs1/chien-ju.ho/Active/tree/output28.txt", "a") as f:
+    with open("/storage1/fs1/chien-ju.ho/Active/tree/output28.txt", "a") as f:
         print(output, file=f, flush=True)
 
 
@@ -620,8 +620,8 @@ if __name__ == "__main__":
         start, end = [int(i) for i in sys.argv[8].split("-")]
         window = 0
 
-        # skills = "ABCD"[:decisions]
-        skills = "AD"
+        skills = "ABCD"[:decisions]
+        # skills = "AD"
         baby, rev = [], []
         for i in range(1, decisions):
             baby.append(skills[:i])
@@ -709,7 +709,7 @@ if __name__ == "__main__":
                 )
                 print(f"High Split - {test_score_high:.2f}")
 
-                with open("algo5.txt", "a") as f:
+                with open("/storage1/fs1/chien-ju.ho/Active/tree/algo5.txt", "a") as f:
                     print(
                         f"{seed};{decisions};{mode};{start_budget};{end_budget};{trial_inc};{budget_inc};{best_branch};{branch_vals};{budget};{loss_algo};{test_score_algo};{test_score_chosen};{test_score_equal};{test_score_high}",
                         file=f,
