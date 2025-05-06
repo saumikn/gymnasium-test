@@ -6,6 +6,7 @@ import gc
 import time
 from multiprocessing import Process
 from pathlib import Path
+from collections import defaultdict
 
 # ruff: noqa: E402
 from utils import import_tf
@@ -16,41 +17,26 @@ tf.config.set_visible_devices([], "GPU")
 
 
 def softmax(a, temp):
-    a /= temp
+    a = a / temp
     a -= a.max()
     a = np.exp(a) / np.exp(a).sum()
     return a
 
 
-skill_key = {
-    "random": {
-        "A": (1, 0),
-        "B": (2, 0),
-        "C": (3, 0),
-        "D": (4, 0),
-        "a": (4, 0.26),
-        "b": (4, 0.14),
-        "c": (4, 0.07),
-    },
-    "crit-8-10-0-0.2": {
-        "A": (1, 0),
-        "B": (2, 0),
-        "C": (3, 0),
-        "D": (4, 0),
-        "a": (4, 4.0),
-        "b": (4, 1.7),
-        "c": (4, 0.7),
-    },
-    "crit-0-2-8-0.2": {
-        "A": (1, 0),
-        "B": (2, 0),
-        "C": (3, 0),
-        "D": (4, 0),
-        "a": (4, 1.95),
-        "b": (4, 0.75),
-        "c": (4, 0.3),
-    },
-}
+def get_skill_key(skill: str, mode: str, depth: int):
+    if skill.startswith("D-"):
+        return (4, float(skill.split("-")[1]))
+    elif skill.isupper():
+        return ("ABCDEFGHIJKLMNOPQRSTUVWXYZ".index(skill) + 1, 0)
+    else:
+        skill = skill.upper()
+        # Read closest.txt to get the temperature for this mode/skill/depth combination
+        with open("closest.txt", "r") as f:
+            for line in f:
+                if line.startswith(f"{depth},{mode},{skill},"):
+                    temp = float(line.strip().split(",")[-1])
+                    return (4, temp)
+        raise ValueError(f"No temperature found for {skill} in {mode} at depth {depth}")
 
 
 class Tree:
@@ -84,7 +70,20 @@ class Tree:
                     self.arr[i] += -a
                     self.arr[_l] += -c
                     self.arr[_r] += b
-
+        elif mode.startswith("linear-"):
+            factor = float(mode.split("-")[1])
+            self.arr = self.rng.random(self.n)
+            for level in range(self.depth):
+                self.arr[2**level - 1 : 2 ** (level + 1) - 1] *= level * factor
+        elif mode.startswith("exponential-"):
+            factor = float(mode.split("-")[1])
+            self.arr = self.rng.random(self.n)
+            for level in range(self.depth):
+                self.arr[2**level - 1 : 2 ** (level + 1) - 1] *= factor**level
+        elif mode == "binary":
+            self.arr = self.rng.integers(
+                0, 1, endpoint=True, size=self.n, dtype=np.int32
+            )
         else:
             raise ValueError("Mode must be start with 'crit-")
 
@@ -140,7 +139,7 @@ class Tree:
         return [self.score_path(path) for path in paths]
 
     def get_choice(self, i, skill):
-        vision, temp = skill_key[self.mode][skill]
+        vision, temp = get_skill_key(skill, self.mode, self.depth)
         if Tree._l(i) >= self.n or vision < 0:
             return None
         lscore = max(self.get_scores(Tree._l(i), vision - 1))
@@ -202,18 +201,15 @@ class Tree:
         # Extract policy actions
         Y_policy = np.array([choice for (_, choice) in path])
 
-        # Calculate value targets (expected future rewards from each state)
-        Y_value = np.zeros(len(path))
-        nodes = [node for (node, _) in path]
+        # Calculate Y_value as array with values for each step in path
+        if len(path) > 1:
+            path_indices = [p for p, _ in path[1:]]
+            path_values = np.array([self.arr[p] for p in path_indices])
+            Y_value = np.sum(path_values)
+        else:
+            Y_value = 0
 
-        # For each position in the path, calculate the expected future reward
-        for i in range(len(path)):
-            # Get the remaining path nodes from current position
-            remaining_path = nodes[i:]
-            # Calculate the sum of rewards for the remaining path
-            Y_value[i] = sum(self.arr[node] for node in remaining_path)
-
-        return X, {"policy": Y_policy, "value": Y_value.reshape(-1, 1)}
+        return X, {"policy": Y_policy, "value": np.full((len(Y_policy), 1), Y_value)}
 
     def __str__(self):
         return str(self.arr)
@@ -257,12 +253,7 @@ class Forest:
 
             paths = [locs]
             for i in range(self.depth - 1):
-                # Get only the policy output (first element in the list of outputs)
-                model_output = model(X)
-                policy_output = (
-                    model_output[0] if isinstance(model_output, list) else model_output
-                )
-                Y = policy_output.numpy().argmax(axis=1)
+                Y = model(X)[0].numpy().argmax(axis=1)
                 X[np.arange(self.m), locs + n] = 0
                 locs = locs * 2 + 1 + Y
                 X[np.arange(self.m), locs + n] = 1
@@ -280,25 +271,11 @@ class Forest:
                 )
 
                 if temp == 0:
-                    # Get only the policy output (first element in the list of outputs)
-                    model_output = model(X)
-                    policy_output = (
-                        model_output[0]
-                        if isinstance(model_output, list)
-                        else model_output
-                    )
-                    Y = policy_output.numpy().argmax(axis=1)
+                    Y = model(X)[0].numpy().argmax(axis=1)
                     for i, choice in enumerate(Y):
                         paths[i].append(Tree._l(paths[i][-1]) + choice)
                 else:
-                    # Get only the policy output (first element in the list of outputs)
-                    model_output = model(X)
-                    policy_output = (
-                        model_output[0]
-                        if isinstance(model_output, list)
-                        else model_output
-                    )
-                    Y = policy_output.numpy()
+                    Y = model(X)[0].numpy()
                     for i, choice in enumerate(Y):
                         choice = softmax(choice, temp)
                         choice = np.random.default_rng().choice(2, p=choice)
@@ -332,7 +309,7 @@ class EarlyStopper:
 
 
 def make_model(
-    depth=None, window=0, opt="sgd", lr=1, num_nodes=16, num_layers=1, model=None
+    depth=None, window=0, opt="adam", lr=1, num_nodes=16, num_layers=1, model=None
 ):
     if model is None:
         if window == 0:
@@ -344,8 +321,8 @@ def make_model(
             x = tf.keras.layers.Dense(num_nodes, activation="relu")(x)
 
         # Policy head (action probabilities)
-        policy_output = tf.keras.layers.Dense(2, name="policy")(x)
-        policy_output = tf.keras.layers.Softmax()(policy_output)
+        policy_logits = tf.keras.layers.Dense(2)(x)
+        policy_output = tf.keras.layers.Softmax(name="policy")(policy_logits)
 
         # Value head (expected reward)
         value_output = tf.keras.layers.Dense(1, name="value")(x)
@@ -373,7 +350,7 @@ def make_model(
     model.compile(
         optimizer=opt,
         loss={"policy": policy_loss, "value": value_loss},
-        loss_weights={"policy": 1.0, "value": 1.0},
+        loss_weights={"policy": 1.0, "value": 0},
         metrics={"policy": "accuracy"},
         run_eagerly=False,
     )
@@ -390,7 +367,7 @@ def exp(
     budget,
     patience=20,
     write=True,
-    opt="sgd",
+    opt="adam",
     lr=1,
     num_nodes=16,
     num_layers=1,
@@ -487,26 +464,35 @@ def exp(
         X_trains, Y_trains, X_tests, Y_tests = [], [], [], []
 
         train_offset = int(1e8)
-        test_budget, test_offset = 16384, int(1e9)
+        test_offset = int(1e9)
 
         for si, (s, budget) in enumerate(stage):
             st = time.perf_counter()
             if not budget:
                 continue
+
+            # Calculate training and testing budgets for each skill
+            if decisions == 4:
+                train_budget = int(budget * 0.75)
+                test_budget = int(budget * 0.25)
+            else:
+                train_budget = budget
+                test_budget = 16384  # Default test budget for other cases
+
             train = Forest(
                 depth,
                 mode,
-                budget * seed + si * train_offset,
-                budget * (seed + 1) + si * train_offset,
+                train_budget * seed + si * train_offset,
+                train_budget * (seed + 1) + si * train_offset,
             )
             X_train, Y_train = train.get_training_data(s, window=window)
             if verbose:
                 print(
-                    f"train data: {seed} {depth} {s} {budget}", time.perf_counter() - st
+                    f"train data: {seed} {depth} {s} {train_budget}",
+                    time.perf_counter() - st,
                 )
 
             st = time.perf_counter()
-            # test_budget, test_offset = 4096, int(1e9)
             test = Forest(
                 depth,
                 mode,
@@ -516,7 +502,8 @@ def exp(
             X_test, Y_test = test.get_training_data(s, window=window)
             if verbose:
                 print(
-                    f"test data: {seed} {depth} {s} {budget}", time.perf_counter() - st
+                    f"test data: {seed} {depth} {s} {test_budget}",
+                    time.perf_counter() - st,
                 )
             X_trains.append(X_train)
             Y_trains.append(Y_train)
@@ -527,9 +514,23 @@ def exp(
             continue
 
         X_train = tf.convert_to_tensor(np.concatenate(X_trains))
-        Y_train = tf.convert_to_tensor(np.concatenate(Y_trains))
+        Y_train = {
+            "policy": tf.convert_to_tensor(
+                np.concatenate([y["policy"] for y in Y_trains])
+            ),
+            "value": tf.convert_to_tensor(
+                np.concatenate([y["value"] for y in Y_trains])
+            ),
+        }
         X_test = tf.convert_to_tensor(np.concatenate(X_tests))
-        Y_test = tf.convert_to_tensor(np.concatenate(Y_tests))
+        Y_test = {
+            "policy": tf.convert_to_tensor(
+                np.concatenate([y["policy"] for y in Y_tests])
+            ),
+            "value": tf.convert_to_tensor(
+                np.concatenate([y["value"] for y in Y_tests])
+            ),
+        }
 
         tqdm_kwargs = {
             "ncols": 80,
@@ -555,16 +556,7 @@ def exp(
 
             # st = time.perf_counter()
             eval_result = model.evaluate(X_test, Y_test, batch_size=16384, verbose=0)
-            # With the new model, evaluate returns:
-            # [total_loss, policy_loss, value_loss, policy_accuracy]
-            if isinstance(eval_result, list) and len(eval_result) > 3:
-                total_loss, policy_loss, value_loss, policy_acc = eval_result
-                loss = total_loss  # Use total loss for early stopping
-                acc = policy_acc
-            else:
-                # For backward compatibility
-                loss, acc = eval_result
-            # print(f"model evaluate: {seed} {epoch}", time.perf_counter() - st)
+            total_loss, _, _, policy_acc = eval_result
 
             if perf_stopping:
                 st = time.perf_counter()
@@ -574,7 +566,7 @@ def exp(
             else:
                 valid_score, test_score = 0, 0
             # print(f"model eval_model: {seed} {epoch}", time.perf_counter() - st)
-            at_best, at_patience = stopper.should_stop(loss)
+            at_best, at_patience = stopper.should_stop(total_loss)
             if at_best:
                 best = model.get_weights()
                 best_output = [
@@ -591,8 +583,8 @@ def exp(
                     num_nodes,
                     num_layers,
                     epoch,
-                    loss,
-                    acc,
+                    total_loss,
+                    policy_acc,
                     temp,
                     valid_score,
                     stopper.wait,
@@ -633,7 +625,7 @@ def get_output(args):
 
 def write_output(output):
     # filepath = "/storage1/fs1/chien-ju.ho/Active/tree/output30.txt"
-    filepath = "/home/n.saumik/gymnasium-test/output/output34.txt"
+    filepath = "/home/n.saumik/gymnasium-test/output/output38.txt"
     if not Path(filepath).exists():
         with open(filepath, "w") as f:
             print(
@@ -697,7 +689,15 @@ if __name__ == "__main__":
         window = 0
 
         # skills_strs = ["A_AD", "AD_D", "D"]
-        skills_strs = ["A", "B", "C", "D", "a", "b", "c"]
+        if decisions == 2:
+            skills_strs = ["A", "D", "a"]
+        elif decisions == 4:
+            skills_strs = ["A", "B", "C", "D", "a", "b", "c"] + [
+                "A_AB_ABC_ABCD",
+                "ABCD_BCD_CD_D",
+            ]
+        else:
+            raise ValueError(f"Decisions {decisions} not implemented")
 
         # skills_strs = [baby]
 

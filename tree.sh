@@ -1,8 +1,9 @@
-# for SEED in 0
-# for SEED in {0..190..10}
-for SEED in {0..900..100}
+for SEED in {0..99}
+# for SEED in {10..990..10}
+# for SEED in {2000..3900..10}
 do
-SEED10=$((${SEED}+100))
+SEED10=$((${SEED}+1))
+# SEED10=$((${SEED}+10))
 # SEED20=$((${SEED}+20))
 # SEED100=$((${SEED}+100))
 
@@ -13,33 +14,34 @@ do
 
 # for BUDGET in 4 8 16 32 64 128 256 512 # 0-200
 # for BUDGET in 16 32 64 128 256 512 1024 2048 4096 8192 16384 32768 65536 131072
-# for BUDGET in 65536
+# for BUDGET in 1048576
 # for BUDGET in 64 128 256 512 1024 2048 4096 8192 16384 32768 65536 131072 # 0-100
-for BUDGET in 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384 32768 # 0-100
+# for BUDGET in 64 256
+for BUDGET in 256 1024 4096 16384 65536 262144 # 0-100
 do
 
-for BATCH_SIZE in 1 # 4 16 64
+for BATCH_SIZE in 32 # 4 16 64
 do
 
 
-# for DEPTH in 2 4
 for DEPTH in 4
 do
 
 
-# for MODE in 'random' 'crit-8-10-0-0.2'  'crit-0-2-8-0.2'
-for MODE in 'crit-8-10-0-0.4' 'crit-8-10-0-0.6' 'crit-8-10-0-0.8' 'crit-8-10-0-1.0'
+# for MODE in 'binary' 'random' 'linear-2' 'linear-3' 'linear-4' 'exponential-2' 'exponential-3' 'exponential-4' 'crit-8-10-0-0.2'  'crit-0-2-8-0.2' 'crit-8-10-0-0.4' 'crit-8-10-0-0.6' 'crit-8-10-0-0.8' 'crit-8-10-0-1.0'
+for MODE in 'random' 'crit-8-10-0-0.2' #'crit-0-2-8-0.2'
+
 do
 
 echo "TREE_${SEED}_${BUDGET}_${DEPTH}_${MODE}"
 
-mem=4
+mem=12
 
 
 bsub -n 1 \
 -q general \
 -m general \
--g /saumik/limit400 \
+-g /saumik/limit300 \
 -G compute-chien-ju.ho \
 -J TREE_${SEED}_${BUDGET}_${DEPTH}_${MODE} \
 -M ${mem}GB \
@@ -63,7 +65,6 @@ done
 
 # break
 done
-
 
 # break
 done
